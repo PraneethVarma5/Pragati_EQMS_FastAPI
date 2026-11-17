@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+
+    <style>
+
+        html,body{
+
+        margin:0;
+        padding:0;
+
+        width:100%;
+        height:100%;
+
+        overflow:hidden;
+
+        background:black;
+
+        }
+
+        video{
+
+        width:100%;
+        height:100%;
+
+        object-fit:contain;
+
+        background:black;
+
+        }
+
+        canvas{
+
+        display:none;
+
+        }
+
+    </style>
+
+</head>
+
+<body>
+
+<video
+        id="preview"
+        autoplay
+        playsinline
+        muted>
+</video>
+
+<canvas id="canvas"></canvas>
+
+<script>
+
+    let currentStream;
+
+    async function startCamera(deviceId=null){
+
+        if(currentStream){
+
+            currentStream.getTracks().forEach(track=>track.stop());
+
+        }
+
+        let constraints={
+            video:deviceId
+                ?{deviceId:{exact:deviceId}}
+                :true,
+            audio:false
+        };
+
+        currentStream=
+            await navigator.mediaDevices.getUserMedia(constraints);
+
+        document
+            .getElementById("preview")
+            .srcObject=currentStream;
+
+    }
+
+    async function getCameraList(){
+
+        await navigator.mediaDevices.getUserMedia({
+            video:true
+        });
+
+        const devices=
+            await navigator.mediaDevices.enumerateDevices();
+
+        const cams=
+            devices
+            .filter(d=>d.kind==="videoinput")
+            .map(d=>({
+                id:d.deviceId,
+                name:d.label
+            }));
+
+        window.chrome.webview.postMessage(
+            JSON.stringify({
+                type:"cameraList",
+                cameras:cams
+            })
+        );
+
+    }
+
+    window.onload=async()=>{
+
+        await getCameraList();
+
+        await startCamera();
+
+    };
+
+</script>
+
+</body>
+
+</html>
