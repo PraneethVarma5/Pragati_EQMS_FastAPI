@@ -382,6 +382,67 @@ class DccNotificationBell
           '$hour:$minute';
     }
 
+    Future<void> _deleteAllNotifications() async {
+      if (_notifications.isEmpty) return;
+
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) {
+          return AlertDialog(
+            title: const Text(
+              'Delete All Notifications',
+              style: TextStyle(fontWeight: FontWeight.w800),
+            ),
+            content: const Text(
+              'Are you sure you want to permanently delete all your notifications?',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFD64545),
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('Delete All'),
+              ),
+            ],
+          );
+        },
+      );
+
+      if (confirmed != true || !mounted) return;
+
+      try {
+        await DccNotificationService.clearAllForUser(
+          widget.userEmail,
+        );
+
+        if (!mounted) return;
+
+        setState(() {
+          _notifications.clear();
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('All notifications deleted successfully.'),
+          ),
+        );
+      } catch (e) {
+        if (!mounted) return;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Unable to delete notifications: $e'),
+          ),
+        );
+      }
+    }
+
     @override
     Widget build(BuildContext context) {
       final unreadCount =
@@ -410,14 +471,22 @@ class DccNotificationBell
                 ),
               ),
             ),
-            if (unreadCount > 0)
-              TextButton(
-                onPressed:
-                _markAllRead,
-                child: const Text(
-                  'Mark all read',
+
+            if (_notifications.isNotEmpty) ...[
+              if (unreadCount > 0)
+                TextButton(
+                  onPressed: _markAllRead,
+                  child: const Text('Mark all as read'),
                 ),
+              TextButton(
+                onPressed: _deleteAllNotifications,
+                style: TextButton.styleFrom(
+                  foregroundColor: const Color(0xFFD64545),
+                ),
+                child: const Text('Delete all'),
               ),
+            ],
+
           ],
         ),
 

@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.api.routes import audit_auth, audit_auditors, audit_operations
+from app.api.routes import audit_auth, audit_auditors, audit_operations, dcc
 from app.core.config import get_settings
 from app.db.session import engine
 
@@ -26,6 +26,7 @@ app.add_middleware(
 app.include_router(audit_auth.router, prefix=settings.api_v1_prefix)
 app.include_router(audit_auditors.router, prefix=settings.api_v1_prefix)
 app.include_router(audit_operations.router, prefix=settings.api_v1_prefix)
+app.include_router(dcc.router, prefix=settings.api_v1_prefix)
 
 
 @app.get("/health")

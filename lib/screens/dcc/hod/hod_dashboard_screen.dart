@@ -60,6 +60,19 @@ class _HodDashboardScreenState
     }
 
     try {
+      // Load and display activity independently first.
+      final activities =
+      await DccActivityService.getActivitiesForUser(
+        user.email,
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        _activities = activities;
+      });
+
+// Load the remaining dashboard data.
       final documents =
       await DccDocumentService.getDocumentsForHod(
         user.email,
@@ -67,11 +80,6 @@ class _HodDashboardScreenState
 
       final pendingDmrRequests =
       await DccDmrService.getPendingHodRequests(
-        user.email,
-      );
-
-      final activities =
-      await DccActivityService.getActivitiesForUser(
         user.email,
       );
 

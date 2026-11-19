@@ -79,7 +79,7 @@ class _AuditTypeManagementScreenState
         const Duration(seconds: 20),
       );
 
-      result.sort(_compareAuditTypes);
+        result.sort(_compareAuditTypes);
 
       if (!mounted) return;
 

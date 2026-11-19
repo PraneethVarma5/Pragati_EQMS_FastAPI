@@ -274,8 +274,11 @@ class _DccManageSidebarScreenState extends State<DccManageSidebarScreen> {
       },
     );
 
-    controller.dispose();
-  }
+    // Dispose after the dialog's closing frame so Flutter's TextField
+    // is no longer attached to this controller.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      controller.dispose();
+    });  }
 
   Future<void> _addDocument() async {
     if (!_isDcc) return;
@@ -575,9 +578,12 @@ class _DccManageSidebarScreenState extends State<DccManageSidebarScreen> {
       },
     );
 
-    documentNoController.dispose();
-    documentNameController.dispose();
-  }
+    // Wait until the dialog has been removed from the widget tree
+    // before disposing controllers used by its TextFields.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      documentNoController.dispose();
+      documentNameController.dispose();
+    });  }
 
   InputDecoration _inputDecoration({
     required String label,

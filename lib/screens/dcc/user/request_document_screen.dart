@@ -50,38 +50,63 @@ class _RequestDocumentScreenState
     });
 
     try {
+      // STEP 1: Save the document request.
+      // This is the main operation and must succeed.
       await DccDocumentRequestService.createRequest(
-        documentName: _documentNameController.text,
+        documentName: _documentNameController.text.trim(),
         userName: user.name,
         userEmail: user.email,
-        description: _descriptionController.text,
+        description: _descriptionController.text.trim(),
       );
 
-      // Nobody was being told a request had come in — DCC only
-      // ever found out if they happened to check the requests
-      // list. Mirrors the "New Document -> Notification" flow.
-      await DccNotificationService.notifyAllDcc(
-        title: 'New Document Request',
-        message: '${user.name} requested '
-            '"${_documentNameController.text.trim()}".',
-        type: 'DOCUMENT_REQUEST_SUBMITTED',
-      );
+      // STEP 2: Notification is secondary.
+      // Notification failure must NOT make a successful request
+      // appear to have failed.
+      bool notificationSent = true;
+
+      try {
+        await DccNotificationService.notifyAllDcc(
+          title: 'New Document Request',
+          message: '${user.name} requested '
+              '"${_documentNameController.text.trim()}".',
+          type: 'DOCUMENT_REQUEST_SUBMITTED',
+        );
+      } catch (notificationError) {
+        notificationSent = false;
+
+        debugPrint(
+          'Document request was saved, but DCC notification failed: '
+              '$notificationError',
+        );
+      }
 
       if (!mounted) return;
 
+      // STEP 3: Show the correct result.
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Document request sent to DCC.'),
+        SnackBar(
+          content: Text(
+            notificationSent
+                ? 'Document request sent successfully to DCC.'
+                : 'Request submitted successfully. '
+                'DCC can see the request, but notification failed.',
+          ),
+          backgroundColor: notificationSent
+              ? Colors.green
+              : Colors.green,
+          duration: const Duration(seconds: 5),
         ),
       );
 
       Navigator.pop(context);
     } catch (e) {
+      // Only show failure if the actual request submission failed.
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Failed to submit request: $e'),
+          content: Text('Failed to submit document request: $e'),
+          backgroundColor: Colors.red,
         ),
       );
     } finally {
@@ -92,7 +117,6 @@ class _RequestDocumentScreenState
       }
     }
   }
-
   @override
   Widget build(BuildContext context) {
     final user = DccSession.currentUser;

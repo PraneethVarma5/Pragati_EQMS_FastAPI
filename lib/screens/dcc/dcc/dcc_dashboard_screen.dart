@@ -63,99 +63,82 @@ class _DccDashboardScreenState
   Future<void> _loadDashboardData({
     bool showRefreshIndicator = false,
   }) async {
-    final user =
-        DccSession.currentUser;
+    final user = DccSession.currentUser;
 
     if (user == null) {
       if (mounted) {
         setState(() {
           _isLoading = false;
+          _isRefreshing = false;
         });
       }
-
       return;
     }
 
-    if (showRefreshIndicator &&
-        mounted) {
+    if (showRefreshIndicator && mounted) {
       setState(() {
         _isRefreshing = true;
       });
     }
 
+    // Each API request is independent.
+    // Failure of one must not prevent the others from loading.
+    List<DccActivity> activities = [];
+    List<DccDocument> documents = [];
+    List<DccDmrRequest> dmrRequests = [];
+
     try {
-      // IMPORTANT:
-      // DCC sees ALL documents.
-      final documents =
-      await DccDocumentService
-          .getDocuments();
-
-      // IMPORTANT:
-      // All DCC users see the same pending DMR queue.
-      final dmrRequests =
-      await DccDmrService
-          .getPendingDccRequests();
-
-      // Activity is specific to the logged-in DCC.
-      final activities =
-      await DccActivityService
-          .getActivitiesForUser(
+      activities = await DccActivityService.getActivitiesForUser(
         user.email,
       );
 
-      documents.sort(
-            (a, b) =>
-            b.revisionDate.compareTo(
-              a.revisionDate,
-            ),
+      activities.sort(
+            (a, b) => b.timestamp.compareTo(a.timestamp),
       );
+    } catch (e) {
+      debugPrint('DCC activity loading failed: $e');
+    }
+
+    try {
+      documents = await DccDocumentService.getDocuments();
+
+      documents.sort(
+            (a, b) => b.revisionDate.compareTo(a.revisionDate),
+      );
+
+      debugPrint(
+        'DCC dashboard fetched ${documents.length} documents.',
+      );
+
+      for (final document in documents) {
+        debugPrint(
+          'Document ${document.documentNo}: status=${document.status}',
+        );
+      }
+    } catch (e) {
+      debugPrint('DCC document loading failed: $e');
+    }
+
+    try {
+      dmrRequests = await DccDmrService.getPendingDccRequests();
 
       dmrRequests.sort(
-            (a, b) =>
-            b.createdDate.compareTo(
-              a.createdDate,
-            ),
+            (a, b) => b.createdDate.compareTo(a.createdDate),
       );
-
-      activities.sort(
-            (a, b) =>
-            b.timestamp.compareTo(
-              a.timestamp,
-            ),
-      );
-
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _documents = documents;
-        _dmrRequests = dmrRequests;
-        _activities = activities;
-        _isLoading = false;
-        _isRefreshing = false;
-      });
-    } catch (_) {
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _isLoading = false;
-        _isRefreshing = false;
-      });
-
-      ScaffoldMessenger.of(context)
-          .showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Unable to load DCC dashboard data.',
-          ),
-        ),
-      );
+    } catch (e) {
+      debugPrint('DCC DMR loading failed: $e');
     }
-  }
 
+    if (!mounted) return;
+
+    setState(() {
+      _documents = documents;
+      _dmrRequests = dmrRequests;
+      _activities = activities;
+      _isLoading = false;
+      _isRefreshing = false;
+    });
+  }
   int get _pendingDccCount {
     return _documents
         .where(

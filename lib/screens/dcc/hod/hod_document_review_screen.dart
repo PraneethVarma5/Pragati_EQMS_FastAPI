@@ -168,6 +168,9 @@ class _HodDocumentReviewScreenState
     final user = DccSession.currentUser;
 
     if (user == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('DCC session not found.')),
+      );
       return;
     }
 
@@ -176,6 +179,7 @@ class _HodDocumentReviewScreenState
     });
 
     try {
+      // CORE OPERATION: Move document into DCC queue.
       final updatedDocument = DccDocument(
         id: document.id,
         documentNo: document.documentNo,
@@ -196,15 +200,12 @@ class _HodDocumentReviewScreenState
         rejectionReason: '',
       );
 
-      await DccDocumentService.updateDocument(
-        updatedDocument,
-      );
+      await DccDocumentService.updateDocument(updatedDocument);
 
+      // Record approval.
       await DccActivityService.addActivity(
         DccActivity(
-          id: DateTime.now()
-              .microsecondsSinceEpoch
-              .toString(),
+          id: DateTime.now().microsecondsSinceEpoch.toString(),
           userEmail: user.email,
           userName: user.name,
           action: 'DOCUMENT_HOD_APPROVED',
@@ -215,34 +216,40 @@ class _HodDocumentReviewScreenState
         ),
       );
 
-      await DccNotificationService.addNotification(
-        DccNotification(
-          id:
-          'DOC_HOD_APPROVED_USER_${document.id}',
-          recipientEmail:
-          document.createdByEmail,
-          title: 'Document Approved by HOD',
-          message:
-          '${document.documentNo} has been approved by '
-              '${user.name} and sent to DCC for review.',
-          type: 'DOCUMENT_HOD_APPROVED',
-          documentNo: document.documentNo,
-          createdAt: DateTime.now(),
-        ),
-      );
-
-      await DccNotificationService.notifyAllDcc(
-        title: 'Document Ready for DCC Review',
-        message:
-        '${document.documentNo} was approved by '
-            '${user.name} and is ready for DCC review.',
-        type: 'DOCUMENT_READY_FOR_DCC',
-        documentNo: document.documentNo,
-      );
-
-      if (!mounted) {
-        return;
+      // Notifications are secondary.
+      // Their failure must not invalidate a successful approval.
+      try {
+        await DccNotificationService.addNotification(
+          DccNotification(
+            id: 'DOC_HOD_APPROVED_USER_${document.id}',
+            recipientEmail: document.createdByEmail,
+            title: 'Document Approved by HOD',
+            message:
+            '${document.documentNo} has been approved by '
+                '${user.name} and sent to DCC for review.',
+            type: 'DOCUMENT_HOD_APPROVED',
+            documentNo: document.documentNo,
+            createdAt: DateTime.now(),
+          ),
+        );
+      } catch (e) {
+        debugPrint('Requester notification failed: $e');
       }
+
+      try {
+        await DccNotificationService.notifyAllDcc(
+          title: 'Document Ready for DCC Review',
+          message:
+          '${document.documentNo} was approved by '
+              '${user.name} and is ready for DCC review.',
+          type: 'DOCUMENT_READY_FOR_DCC',
+          documentNo: document.documentNo,
+        );
+      } catch (e) {
+        debugPrint('DCC notification failed: $e');
+      }
+
+      if (!mounted) return;
 
       setState(() {
         _isProcessing = false;
@@ -250,47 +257,37 @@ class _HodDocumentReviewScreenState
 
       await showDialog(
         context: context,
-        builder: (_) {
-          return AlertDialog(
-            title: const Row(
-              children: [
-                Icon(
-                  Icons.check_circle_rounded,
-                  color: Color(0xFF2E8B57),
-                ),
-                SizedBox(width: 10),
-                Text(
-                  'Document Approved',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ],
-            ),
-            content: Text(
-              '${document.documentNo} has been approved and sent to DCC.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () {
-                  Navigator.pop(context);
-                },
-                child: const Text('Close'),
+        builder: (_) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(
+                Icons.check_circle_rounded,
+                color: Color(0xFF2E8B57),
+              ),
+              SizedBox(width: 10),
+              Text(
+                'Document Approved',
+                style: TextStyle(fontWeight: FontWeight.w800),
               ),
             ],
-          );
-        },
+          ),
+          content: Text(
+            '${document.documentNo} has been approved and sent to DCC.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
       );
 
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       Navigator.pop(context, true);
     } catch (e) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       setState(() {
         _isProcessing = false;
@@ -298,14 +295,12 @@ class _HodDocumentReviewScreenState
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'Unable to approve document: $e',
-          ),
+          content: Text('Approval operation failed: $e'),
+          backgroundColor: Colors.red,
         ),
       );
     }
   }
-
   Future<void> _rejectDocument() async {
     final controller = TextEditingController();
 

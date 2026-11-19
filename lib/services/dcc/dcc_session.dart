@@ -1,150 +1,84 @@
-
 import 'dart:convert';
-
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-
 import '../../models/dcc/dcc_user.dart';
 import '../session_activity.dart';
+import 'dcc_api_client.dart';
 
 class DccSession {
   static DccUser? currentUser;
-
   static const String _sessionKey = 'dcc_active_session';
   static const String _tokenKey = 'dcc_server_session_token';
 
-  static SupabaseClient get _client => Supabase.instance.client;
-
   static Future<void> setUser(DccUser user) async {
-    if (user.sessionToken.isEmpty) {
-      throw Exception('Cannot save DCC session without server token.');
-    }
-
+    if (user.sessionToken.isEmpty) throw Exception('Cannot save DCC session without server token.');
     currentUser = user;
-
     final prefs = await SharedPreferences.getInstance();
-
-    // Store the token separately from the profile.
     await prefs.setString(_tokenKey, user.sessionToken);
-
-    await prefs.setString(
-      _sessionKey,
-      jsonEncode({
-        'id': user.id,
-        'name': user.name,
-        'email': user.email,
-        'role': user.role,
-        'hodName': user.hodName,
-        'hodEmail': user.hodEmail,
-        'active': user.active,
-      }),
-    );
-
+    await prefs.setString(_sessionKey, jsonEncode({
+      'id': user.id, 'name': user.name, 'email': user.email, 'role': user.role,
+      'hodName': user.hodName, 'hodEmail': user.hodEmail, 'active': user.active,
+    }));
     await SessionActivity.reset();
   }
 
   static Future<bool> restoreSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_sessionKey);
+    final token = prefs.getString(_tokenKey);
+    if (raw == null || raw.trim().isEmpty || token == null || token.isEmpty) {
+      await clear(revokeServerSession: false); return false;
+    }
+    if (await SessionActivity.isExpired()) {
+      await clear(); return false;
+    }
+    // Load the saved token into memory before making the authenticated
+    // validation request. The server, not this cached profile, is authoritative.
     try {
-      final prefs = await SharedPreferences.getInstance();
-
-      final rawProfile = prefs.getString(_sessionKey);
-      final token = prefs.getString(_tokenKey);
-
-      if (rawProfile == null ||
-          rawProfile.trim().isEmpty ||
-          token == null ||
-          token.isEmpty) {
-        await clear();
-        return false;
-      }
-
-      // Preserve the existing local idle timeout.
-      if (await SessionActivity.isExpired()) {
-        await clear();
-        return false;
-      }
-
-      // Ask PostgreSQL to validate the actual session.
-      final response = await _client.rpc(
-        'dcc_validate_session',
-        params: {
-          'p_session_token': token,
-        },
-      );
-
-      final rows = List<Map<String, dynamic>>.from(response ?? []);
-
-      if (rows.isEmpty) {
-        await clear();
-        return false;
-      }
-
-      final row = rows.first;
-
-      final user = DccUser(
-        id: row['id']?.toString() ?? '',
-        name: row['name']?.toString() ?? '',
-        email: row['email']?.toString() ?? '',
-        role: row['role']?.toString() ?? '',
-        hodName: row['hod_name']?.toString() ?? '',
-        hodEmail: row['hod_email']?.toString() ?? '',
+      final cached = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+      currentUser = DccUser(
+        id: cached['id']?.toString() ?? '',
+        name: cached['name']?.toString() ?? '',
+        email: cached['email']?.toString() ?? '',
+        role: cached['role']?.toString() ?? '',
+        hodName: cached['hodName']?.toString() ?? '',
+        hodEmail: cached['hodEmail']?.toString() ?? '',
         password: '',
-        active: row['active'] == true,
+        active: cached['active'] == true,
         sessionToken: token,
       );
-
-      if (user.id.isEmpty ||
-          user.email.isEmpty ||
-          user.role.isEmpty ||
-          !user.active) {
-        await clear();
-        return false;
+      final result = await DccApiClient.get('/auth/session');
+      if (result is! Map || result['valid'] != true || result['user'] is! Map) {
+        await clear(revokeServerSession: false); return false;
       }
-
-      // Use the database profile, not the cached browser role.
-      currentUser = user;
-
-      // Refresh cached profile with authoritative values.
-      await prefs.setString(
-        _sessionKey,
-        jsonEncode({
-          'id': user.id,
-          'name': user.name,
-          'email': user.email,
-          'role': user.role,
-          'hodName': user.hodName,
-          'hodEmail': user.hodEmail,
-          'active': user.active,
-        }),
+      final row = Map<String,dynamic>.from(result['user'] as Map);
+      final user = DccUser(
+        id: row['id']?.toString() ?? '', name: row['name']?.toString() ?? '',
+        email: row['email']?.toString() ?? '', role: row['role']?.toString() ?? '',
+        hodName: row['hod_name']?.toString() ?? '', hodEmail: row['hod_email']?.toString() ?? '',
+        password: '', active: row['active'] == true, sessionToken: token,
       );
-
+      if (user.id.isEmpty || user.email.isEmpty || user.role.isEmpty || !user.active) {
+        await clear(revokeServerSession: false); return false;
+      }
+      currentUser = user;
+      await prefs.setString(_sessionKey, jsonEncode({
+        'id': user.id, 'name': user.name, 'email': user.email, 'role': user.role,
+        'hodName': user.hodName, 'hodEmail': user.hodEmail, 'active': user.active,
+      }));
       return true;
     } catch (_) {
-      await clear();
+      await clear(revokeServerSession: false);
       return false;
     }
   }
 
-  static Future<void> clear() async {
+  static Future<void> clear({bool revokeServerSession = true}) async {
     final prefs = await SharedPreferences.getInstance();
     final token = prefs.getString(_tokenKey);
-
-    // Attempt server-side revocation before removing local credentials.
-    if (token != null && token.isNotEmpty) {
-      try {
-        await _client.rpc(
-          'dcc_logout',
-          params: {
-            'p_session_token': token,
-          },
-        );
-      } catch (_) {
-        // Always clear local credentials even if the network is unavailable.
-      }
+    if (revokeServerSession && token != null && token.isNotEmpty) {
+      try { await DccApiClient.post('/auth/logout'); } catch (_) {}
     }
-
     currentUser = null;
-
     await prefs.remove(_sessionKey);
     await prefs.remove(_tokenKey);
   }
@@ -152,30 +86,9 @@ class DccSession {
   static bool get isLoggedIn => currentUser != null;
 
   static Future<bool> validateCurrentSession() async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString(_tokenKey);
-
-    if (token == null || token.isEmpty) {
-      await clear();
-      return false;
-    }
-
     try {
-      final response = await _client.rpc(
-        'dcc_validate_session',
-        params: {
-          'p_session_token': token,
-        },
-      );
-
-      final rows = List<Map<String, dynamic>>.from(response ?? []);
-
-      if (rows.isEmpty) {
-        await clear();
-        return false;
-      }
-
-      return true;
+      final result = await DccApiClient.get('/auth/session');
+      return result is Map && result['valid'] == true;
     } catch (_) {
       return false;
     }

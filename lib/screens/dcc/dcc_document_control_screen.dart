@@ -14,7 +14,7 @@ import '../../services/dcc/dcc_folder_service.dart';
 import '../../services/dcc/dcc_master_data_service.dart';
 import '../../services/dcc/dcc_session.dart';
 import '../../services/realtime_service.dart';
-
+import '../../services/dcc/dcc_api_client.dart';
 class DccDocumentControlScreen extends StatefulWidget {
   const DccDocumentControlScreen({super.key});
 
@@ -111,7 +111,17 @@ class _DccDocumentControlScreenState
       ),
     );
   }
+  String _formatDate(String value) {
+    final parsedDate = DateTime.tryParse(value);
 
+    if (parsedDate == null) {
+      return value;
+    }
+
+    return '${parsedDate.day.toString().padLeft(2, '0')}.'
+        '${parsedDate.month.toString().padLeft(2, '0')}.'
+        '${parsedDate.year}';
+  }
   Future<void> _showCreateFolderDialog() async {
     if (!_isDccUser) return;
     final controller = TextEditingController();
@@ -337,9 +347,15 @@ class _DccDocumentControlScreenState
   }
 
   Future<void> _loadReleasedDocuments() async {
-    try {
-      final documents =
-      await DccDocumentService.getDocuments();
+if (!mounted) return;
+
+setState(() {
+_isLoading = true;
+});
+
+try {
+  final documents =
+      await DccDocumentService.getReleasedDocuments();
 
       final released = documents
           .where(
@@ -497,24 +513,24 @@ class _DccDocumentControlScreenState
     );
   }
 
-  Future<void> _viewDocument(
-      DccDocument document,
-      ) async {
+  bool _isOpeningDocument = false;
+
+  Future<void> _viewDocument(DccDocument document) async {
+    if (_isOpeningDocument) return;
+
+    setState(() {
+      _isOpeningDocument = true;
+    });
+
     try {
-      final pdfPath =
-      document.releasedPdfPath.trim();
+      final pdfPath = document.releasedPdfPath.trim();
 
       if (pdfPath.isEmpty) {
-        throw Exception(
-          'Released PDF is not available for this document.',
-        );
+        throw Exception('Released PDF is not available for this document.');
       }
 
-      final url =
-      await DccStorageService.createSignedUrl(
-        pdfPath,
-        expiresIn: 3600,
-      );
+      // Released documents use the public FastAPI endpoint.
+      final url = DccApiClient.fileUrl(pdfPath);
 
       final launched = await launchUrl(
         Uri.parse(url),
@@ -522,24 +538,23 @@ class _DccDocumentControlScreenState
       );
 
       if (!launched) {
-        throw Exception(
-          'The browser could not open the released PDF.',
-        );
+        throw Exception('The browser could not open the released PDF.');
       }
     } catch (e) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Unable to open released PDF: $e',
-          ),
-        ),
+        SnackBar(content: Text('Unable to open released PDF: $e')),
       );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isOpeningDocument = false;
+        });
+      }
     }
   }
+
   @override
   Widget build(BuildContext context) {
     final documents = _filteredDocuments;
@@ -559,12 +574,7 @@ class _DccDocumentControlScreenState
 
                   Expanded(
                     child: Padding(
-                      padding: const EdgeInsets.fromLTRB(
-                        24,
-                        24,
-                        30,
-                        30,
-                      ),
+                      padding: const EdgeInsets.all(16),
                       child: Column(
                         crossAxisAlignment:
                         CrossAxisAlignment.start,
@@ -574,7 +584,31 @@ class _DccDocumentControlScreenState
                           const SizedBox(height: 22),
 
                           Expanded(
-                            child: _buildDocumentTable(
+                            child: _isLoading
+                                ? const Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  SizedBox(
+                                    width: 36,
+                                    height: 36,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 3,
+                                      color: Color(0xFF3155D9),
+                                    ),
+                                  ),
+                                  SizedBox(height: 16),
+                                  Text(
+                                    'Loading released documents...',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: Color(0xFF6B7280),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            )
+                                : _buildDocumentTable(
                               documents,
                             ),
                           ),
@@ -858,183 +892,115 @@ class _DccDocumentControlScreenState
     );
   }
 
-  Widget _buildDocumentTable(
-      List<DccDocument> documents,
-      ) {
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: const Color(0xFFE4E8F0),
-        ),
-      ),
-      child: documents.isEmpty
-          ? const Center(
-        child: Text(
-          'No released documents found.',
-          style: TextStyle(
-            fontSize: 14,
-            color: Color(0xFF6B7280),
-          ),
-        ),
-      )
-          : SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: SingleChildScrollView(
-          child: DataTable(
-            columnSpacing: 28,
-            headingRowHeight: 52,
-            dataRowMinHeight: 62,
-            dataRowMaxHeight: 72,
-            headingRowColor:
-            WidgetStateProperty.all(
-              const Color(0xFFF8F9FC),
+
+  Widget _buildDocumentTable(List<DccDocument> documents) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return Container(
+          width: double.infinity,
+          height: double.infinity,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: const Color(0xFFE4E8F0),
             ),
-            columns: const [
-              DataColumn(
-                label: Text(
-                  'Document No',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
+          ),
+          child: documents.isEmpty
+              ? const Center(
+            child: Text(
+              'No released documents found.',
+              style: TextStyle(
+                fontSize: 14,
+                color: Color(0xFF6B7280),
               ),
-              DataColumn(
-                label: Text(
-                  'Document Name',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                  ),
+            ),
+          )
+              : SingleChildScrollView(
+            scrollDirection: Axis.vertical,
+            child: SizedBox(
+              width: constraints.maxWidth,
+              child: DataTable(
+                horizontalMargin: 16,
+                columnSpacing: constraints.maxWidth < 900 ? 12 : 24,
+                headingRowHeight: 52,
+                dataRowMinHeight: 62,
+                dataRowMaxHeight: 72,
+                headingRowColor:
+                WidgetStateProperty.all(
+                  const Color(0xFFF8F9FC),
                 ),
-              ),
-              DataColumn(
-                label: Text(
-                  'Type',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-              DataColumn(
-                label: Text(
-                  'Rev',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-              DataColumn(
-                label: Text(
-                  'Date',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-              DataColumn(
-                label: Text(
-                  'Release Status',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-              DataColumn(
-                label: Text(
-                  'PDF Document',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-            ],
-            rows: documents.map(
-                  (document) {
-                return DataRow(
-                  cells: [
-                    DataCell(
-                      Text(
-                        document.documentNo,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w700,
-                          color: Color(0xFF172033),
-                        ),
-                      ),
-                    ),
-
-                    DataCell(
-                      Text(
-                        document.documentName,
-                      ),
-                    ),
-
-                    DataCell(
-                      Text(
-                        document.documentType,
-                      ),
-                    ),
-
-                    DataCell(
-                      Text(
-                        'Rev ${document.revision}',
-                      ),
-                    ),
-
-                    DataCell(
-                      Text(
-                        document.revisionDate,
-                      ),
-                    ),
-
-                    DataCell(
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 6,
-                        ),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFE8F5E9),
-                          borderRadius:
-                          BorderRadius.circular(20),
-                        ),
-                        child: const Text(
-                          'Released',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w800,
-                            color: Color(0xFF2E7D32),
+                columns: const [
+                  DataColumn(label: Text('Document No')),
+                  DataColumn(label: Text('Document Name')),
+                  DataColumn(label: Text('Type')),
+                  DataColumn(label: Text('Rev')),
+                  DataColumn(label: Text('Date')),
+                  DataColumn(label: Text('Release Status')),
+                  DataColumn(label: Text('PDF Document')),
+                ],
+                rows: documents.map((document) {
+                  return DataRow(
+                    cells: [
+                      DataCell(
+                        Text(
+                          document.documentNo,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF172033),
                           ),
                         ),
                       ),
-                    ),
-
-                    DataCell(
-                      TextButton.icon(
-                        onPressed: () {
-                          _viewDocument(document);
-                        },
-                        icon: const Icon(
-                          Icons.visibility_outlined,
-                          size: 17,
-                        ),
-                        label: const Text(
-                          'View',
-                        ),
-                        style: TextButton.styleFrom(
-                          foregroundColor:
-                          const Color(0xFF3155D9),
+                      DataCell(
+                        Text(
+                          document.documentName,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                    ),
-                  ],
-                );
-              },
-            ).toList(),
+                      DataCell(Text(document.documentType)),
+                      DataCell(Text('Rev ${document.revision}')),
+                      DataCell(Text(_formatDate(document.revisionDate))),
+                      DataCell(
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE8F5E9),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: const Text(
+                            'Released',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                              color: Color(0xFF2E7D32),
+                            ),
+                          ),
+                        ),
+                      ),
+                      DataCell(
+                        TextButton.icon(
+                          onPressed: () => _viewDocument(document),
+                          icon: const Icon(
+                            Icons.visibility_outlined,
+                            size: 17,
+                          ),
+                          label: const Text('View'),
+                          style: TextButton.styleFrom(
+                            foregroundColor: const Color(0xFF3155D9),
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                }).toList(),
+              ),
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 

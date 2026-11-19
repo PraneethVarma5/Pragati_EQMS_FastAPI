@@ -76,11 +76,20 @@ class _UserDashboardScreenState
     }
 
     try {
+      // Load activity independently first, so it can be displayed
+// even if documents or DMR loading fails.
       final activities =
       await DccActivityService.getActivitiesForUser(
         user.email,
       );
 
+      if (!mounted) return;
+
+      setState(() {
+        _activities = activities;
+      });
+
+// Continue loading the other dashboard data.
       final documents =
       await DccDocumentService.getDocumentsByUser(
         user.email,
