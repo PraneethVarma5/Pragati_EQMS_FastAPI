@@ -663,12 +663,59 @@ class _DccDmrRequestsScreenState
     }
 
     try {
-      await DccDmrService
-          .rejectRevisedDocument(
+      await DccDmrService.rejectRevisedDocument(
         request,
         reason.trim(),
         user.name,
       );
+
+// ============================================================
+// NOTIFY REQUESTING USER
+// ============================================================
+
+      try {
+        await DccNotificationService.addNotification(
+          DccNotification(
+            id: 'DMR_REVISION_REJECTED_${request.id}_'
+                '${DateTime.now().microsecondsSinceEpoch}',
+            recipientEmail: request.requestedByEmail,
+            title: 'Revised Document Rejected',
+            message:
+            '${request.documentNo} was rejected by DCC. '
+                'Reason: ${reason.trim()}. You can correct the '
+                'document and submit it again.',
+            type: 'DMR_REVISION_REJECTED',
+            documentNo: request.documentNo,
+            createdAt: DateTime.now(),
+          ),
+        );
+      } catch (e) {
+        debugPrint('DMR revision rejection notification failed: $e');
+      }
+
+// ============================================================
+// RECORD DCC ACTIVITY
+// ============================================================
+
+      try {
+        await DccActivityService.addActivity(
+          DccActivity(
+            id: DateTime.now()
+                .microsecondsSinceEpoch
+                .toString(),
+            userEmail: user.email,
+            userName: user.name,
+            action: 'DMR_REVISION_REJECTED',
+            description:
+            'Rejected revised document for ${request.documentNo}. '
+                'Reason: ${reason.trim()}',
+            documentNo: request.documentNo,
+            timestamp: DateTime.now(),
+          ),
+        );
+      } catch (e) {
+        debugPrint('DMR revision rejection activity failed: $e');
+      }
 
       await _loadRequests(
         refresh: true,

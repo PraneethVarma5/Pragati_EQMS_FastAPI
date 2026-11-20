@@ -11,6 +11,8 @@ import '../../../services/dcc/dcc_storage_service.dart';
 import '../../../services/realtime_service.dart';
 import '../../../services/app_notifications.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../../models/dcc/dcc_activity.dart';
+import '../../../services/dcc/dcc_activity_service.dart';
 
 class UserDmrRequestsScreen extends StatefulWidget {
   const UserDmrRequestsScreen({
@@ -362,21 +364,53 @@ class _UserDmrRequestsScreenState
       );
 
       // ==========================================================
-      // NOTIFY DCC
-      // ==========================================================
+// RECORD USER ACTIVITY
+// Activity failure must not undo successful submission.
+// ==========================================================
 
-      await DccNotificationService.notifyAllDcc(
-        title:
-        'Revised Document Ready for Review',
-        message:
-        '${request.requestedByName} submitted a revised document '
-            'for ${request.documentNo}. It is ready for DCC review.',
-        type:
-        'REVISED_DOCUMENT_SUBMITTED',
-        documentNo:
-        request.documentNo,
-      );
+      final currentUser = DccSession.currentUser;
 
+      if (currentUser != null) {
+        try {
+          await DccActivityService.addActivity(
+            DccActivity(
+              id: DateTime.now()
+                  .microsecondsSinceEpoch
+                  .toString(),
+              userEmail: currentUser.email,
+              userName: currentUser.name,
+              action: 'DMR_REVISED_DOCUMENT_SUBMITTED',
+              description:
+              'Submitted revised document ${request.documentNo} '
+                  'to DCC for review.',
+              documentNo: request.documentNo,
+              timestamp: DateTime.now(),
+            ),
+          );
+        } catch (e) {
+          debugPrint('DMR revised submission activity failed: $e');
+        }
+      }
+
+// ==========================================================
+// NOTIFY SHARED DCC TEAM
+// Notification failure must not undo successful submission.
+// ==========================================================
+
+      try {
+        await DccNotificationService.notifyAllDcc(
+          title: 'Revised Document Ready for Review',
+          message:
+          '${request.requestedByName} submitted a revised document '
+              'for ${request.documentNo}. It is ready for DCC review.',
+          type: 'REVISED_DOCUMENT_SUBMITTED',
+          documentNo: request.documentNo,
+        );
+      } catch (e) {
+        debugPrint(
+          'Revised document DCC notification failed: $e',
+        );
+      }
       if (!mounted) {
         return true;
       }

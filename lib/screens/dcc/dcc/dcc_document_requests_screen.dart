@@ -6,6 +6,8 @@ import '../../../services/dcc/dcc_document_request_service.dart';
 import '../../../services/dcc/dcc_master_data_service.dart';
 import '../../../services/dcc/dcc_notification_service.dart';
 import '../../../services/dcc/dcc_session.dart';
+import '../../../models/dcc/dcc_activity.dart';
+import '../../../services/dcc/dcc_activity_service.dart';
 
 
 class DccDocumentRequestsScreen
@@ -359,79 +361,51 @@ class _DccDocumentRequestDetailScreenState
   }
 
   Future<void> _saveAndNotify() async {
-    if (_documentNoController.text
-        .trim()
-        .isEmpty) {
+    if (_documentNoController.text.trim().isEmpty) {
       _showError('Enter document number');
       return;
     }
 
-    if (_documentNameController.text
-        .trim()
-        .isEmpty) {
+    if (_documentNameController.text.trim().isEmpty) {
       _showError('Enter document name');
       return;
     }
 
-    if (_documentTypeController.text
-        .trim()
-        .isEmpty) {
+    if (_documentTypeController.text.trim().isEmpty) {
       _showError('Enter document type');
       return;
     }
 
-    if (_departmentController.text
-        .trim()
-        .isEmpty) {
+    if (_departmentController.text.trim().isEmpty) {
       _showError('Enter department');
       return;
     }
 
-    if (_candidateNameController.text
-        .trim()
-        .isEmpty) {
+    if (_candidateNameController.text.trim().isEmpty) {
       _showError('Enter candidate name');
       return;
     }
 
-    if (_candidateEmailController.text
-        .trim()
-        .isEmpty) {
+    if (_candidateEmailController.text.trim().isEmpty) {
       _showError('Enter candidate email');
       return;
     }
 
-    setState(() {
-      _saving = true;
-    });
+    setState(() => _saving = true);
 
     try {
-      final currentUser =
-          DccSession.currentUser;
+      final currentUser = DccSession.currentUser;
 
-      final documentNo =
-      _documentNoController.text.trim();
-
-      final documentName =
-      _documentNameController.text.trim();
-
-      final documentType =
-      _documentTypeController.text.trim();
-
-      final department =
-      _departmentController.text.trim();
-
-      final candidateName =
-      _candidateNameController.text.trim();
-
+      final documentNo = _documentNoController.text.trim();
+      final documentName = _documentNameController.text.trim();
+      final documentType = _documentTypeController.text.trim();
+      final department = _departmentController.text.trim();
+      final candidateName = _candidateNameController.text.trim();
       final candidateEmail =
-      _candidateEmailController.text
-          .trim()
-          .toLowerCase();
+      _candidateEmailController.text.trim().toLowerCase();
 
-      // 1. Save DCC-entered details against the request.
-      await DccDocumentRequestService
-          .updateDccDetails(
+      // 1. Save DCC details.
+      await DccDocumentRequestService.updateDccDetails(
         requestId: widget.request.id,
         documentNo: documentNo,
         documentName: documentName,
@@ -441,9 +415,10 @@ class _DccDocumentRequestDetailScreenState
         candidateEmail: candidateEmail,
       );
 
-      // 2. Add the document to Master Data. A brand-new document starts
-      // at Rev 0; an existing document number advances automatically.
-      final existingMaster = await DccMasterDataService.getByDocumentNo(documentNo);
+      // 2. Save/update Master Data.
+      final existingMaster =
+      await DccMasterDataService.getByDocumentNo(documentNo);
+
       await DccMasterDataService.upsertEntry(
         DccMasterData(
           documentNo: documentNo,
@@ -459,43 +434,76 @@ class _DccDocumentRequestDetailScreenState
         manualRevision: existingMaster == null ? 0 : null,
       );
 
-      // 3. Create the user's in-app upload notification.
-      await DccNotificationService
-          .createDocumentUploadNotification(
-        userEmail: candidateEmail,
-        documentRequestId:
-        widget.request.id,
-        documentName: documentName,
-      );
+      // 3. Notify the requesting USER.
+      bool notificationSent = true;
 
-      // 4. Only mark the request as NOTIFIED
-      // after Master Data and notification succeed.
-      await DccDocumentRequestService
-          .markAsNotified(
-        widget.request.id,
-      );
+      try {
+        await DccNotificationService.createDocumentUploadNotification(
+          userEmail: candidateEmail,
+          documentRequestId: widget.request.id,
+          documentName: documentName,
+        );
+
+        // Mark as notified only after notification succeeds.
+        await DccDocumentRequestService.markAsNotified(
+          widget.request.id,
+        );
+      } catch (e) {
+        notificationSent = false;
+        debugPrint('Document upload notification failed: $e');
+      }
+
+      // 4. Record DCC activity independently.
+      bool activitySaved = true;
+
+      try {
+        await DccActivityService.addActivity(
+          DccActivity(
+            id: 'DOC_REQUEST_PROCESSED_${DateTime.now().microsecondsSinceEpoch}',
+            userEmail: currentUser?.email ?? '',
+            userName: currentUser?.name ?? '',
+            action: 'DOCUMENT_REQUEST_PROCESSED',
+            description:
+            'Processed the document request for "$documentName" '
+                '(Document No: $documentNo).',
+            documentNo: documentNo,
+            timestamp: DateTime.now(),
+          ),
+        );
+      } catch (e) {
+        activitySaved = false;
+        debugPrint('DCC document request activity failed: $e');
+      }
 
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context)
-          .showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Document details saved and user notified.',
-          ),
+      String message = 'Document details and Master Data saved successfully.';
+
+      if (!notificationSent && !activitySaved) {
+        message += ' User notification and recent activity failed.';
+      } else if (!notificationSent) {
+        message += ' User notification failed.';
+      } else if (!activitySaved) {
+        message += ' Recent activity failed.';
+      } else {
+        message += ' User notified successfully.';
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor:
+          notificationSent && activitySaved ? Colors.green : Colors.orange,
+          duration: const Duration(seconds: 5),
         ),
       );
 
       Navigator.pop(context);
     } catch (e) {
-      _showError(
-        'Failed to save request: $e',
-      );
+      _showError('Failed to save document details: $e');
     } finally {
       if (mounted) {
-        setState(() {
-          _saving = false;
-        });
+        setState(() => _saving = false);
       }
     }
   }

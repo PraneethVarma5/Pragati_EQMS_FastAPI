@@ -1,30 +1,20 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 
 import '../../../models/dcc/dcc_document.dart';
-import '../../../services/dcc/dcc_document_service.dart';
-import '../../../services/dcc/dcc_storage_service.dart';
-import '../../../services/dcc/dcc_session.dart';
-import '../../../models/dcc/dcc_activity.dart';
-import '../../../services/dcc/dcc_activity_service.dart';
-import '../../../models/dcc/dcc_notification.dart';
-
-import '../../../services/dcc/dcc_notification_service.dart';
-import '../../../services/dcc/dcc_master_data_service.dart';
-
-import '../../../models/dcc/dcc_document.dart';
 import '../../../models/dcc/dcc_document_request.dart';
-import '../../../services/dcc/dcc_document_service.dart';
-import '../../../services/dcc/dcc_storage_service.dart';
-import '../../../services/dcc/dcc_session.dart';
 import '../../../models/dcc/dcc_activity.dart';
-import '../../../services/dcc/dcc_activity_service.dart';
 import '../../../models/dcc/dcc_notification.dart';
 
+import '../../../services/dcc/dcc_document_service.dart';
+import '../../../services/dcc/dcc_document_request_service.dart';
+import '../../../services/dcc/dcc_storage_service.dart';
+import '../../../services/dcc/dcc_session.dart';
+import '../../../services/dcc/dcc_activity_service.dart';
 import '../../../services/dcc/dcc_notification_service.dart';
 import '../../../services/dcc/dcc_master_data_service.dart';
-import '../../../services/dcc/dcc_document_request_service.dart';
 
 class NewDocumentScreen extends StatefulWidget {
   final String? documentRequestId;
@@ -393,55 +383,66 @@ class _NewDocumentScreenState
           .format(DateTime.now()),
     );
 
-    await DccDocumentService.addDocument(
-      document,
-    );
 
-// If this upload came from a DCC-approved
-// document request, close that request.
+    await DccDocumentService.addDocument(document);
+
+// Mark the original DCC request as uploaded.
+// This is secondary to saving the actual document.
     if (widget.restrictedUploadMode &&
         widget.documentRequestId != null &&
         widget.documentRequestId!.isNotEmpty) {
-
-      await DccDocumentRequestService
-          .markAsUploaded(
-        widget.documentRequestId!,
-      );
+      try {
+        await DccDocumentRequestService.markAsUploaded(
+          widget.documentRequestId!,
+        );
+      } catch (e) {
+        debugPrint('Document request status update failed: $e');
+      }
     }
 
-    await DccNotificationService.addNotification(
-      DccNotification(
-        id:
-        'DOC_HOD_SUBMITTED_${document.id}',
-        recipientEmail:
-        document.hodEmail,
-        title:
-        'New Document Approval Required',
-        message:
-        '${document.createdByName} submitted ${document.documentNo} for your approval.',
-        type:
-        'DOCUMENT_SUBMITTED_FOR_HOD',
-        documentNo:
-        document.documentNo,
-        createdAt:
-        DateTime.now(),
-      ),
-    );
+// Notify assigned HOD independently.
+    bool hodNotificationFailed = false;
 
-    await DccActivityService.addActivity(
-      DccActivity(
-        id: DateTime.now()
-            .microsecondsSinceEpoch
-            .toString(),
-        userEmail: currentUser.email,
-        userName: currentUser.name,
-        action: 'DOCUMENT_SUBMITTED',
-        description:
-        'Submitted ${document.documentNo} for HOD approval',
-        documentNo: document.documentNo,
-        timestamp: DateTime.now(),
-      ),
-    );
+    try {
+      await DccNotificationService.addNotification(
+        DccNotification(
+          id: 'DOC_HOD_SUBMITTED_${document.id}',
+          recipientEmail: document.hodEmail.trim().toLowerCase(),
+          title: 'New Document Approval Required',
+          message:
+          '${document.createdByName} submitted '
+              '${document.documentNo} for your approval.',
+          type: 'DOCUMENT_SUBMITTED_FOR_HOD',
+          documentNo: document.documentNo,
+          createdAt: DateTime.now(),
+        ),
+      );
+    } catch (e) {
+      hodNotificationFailed = true;
+      debugPrint('HOD notification failed: $e');
+    }
+
+// Record USER activity independently.
+    bool activityFailed = false;
+
+    try {
+      await DccActivityService.addActivity(
+        DccActivity(
+          id: DateTime.now().microsecondsSinceEpoch.toString(),
+          userEmail: currentUser.email,
+          userName: currentUser.name,
+          action: 'DOCUMENT_SUBMITTED',
+          description:
+          'Submitted ${document.documentNo} for HOD approval',
+          documentNo: document.documentNo,
+          timestamp: DateTime.now(),
+        ),
+      );
+    } catch (e) {
+      activityFailed = true;
+      debugPrint('USER document submission activity failed: $e');
+    }
+
 
     if (!mounted) {
       return;

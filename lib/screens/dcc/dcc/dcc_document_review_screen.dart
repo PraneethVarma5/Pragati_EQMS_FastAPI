@@ -201,10 +201,17 @@ class _DccDocumentReviewScreenState
       return;
     }
 
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _isProcessing = true;
+    });
+
     try {
       final pdfBytes =
           _convertedPdfFile?.bytes;
-
       if (pdfBytes == null ||
           pdfBytes.isEmpty) {
         throw Exception(
@@ -233,6 +240,7 @@ class _DccDocumentReviewScreenState
       final updatedDocument =
       DccDocument(
         id: document.id,
+        folderName: document.folderName,
         documentNo: document.documentNo,
         documentName: document.documentName,
         documentType: document.documentType,
@@ -278,41 +286,42 @@ class _DccDocumentReviewScreenState
         updatedDocument,
       );
 
-      await DccActivityService.addActivity(
-        DccActivity(
-          id: DateTime.now()
-              .microsecondsSinceEpoch
-              .toString(),
-          userEmail: user.email,
-          userName: user.name,
-          action: 'DOCUMENT_RELEASED',
-          description:
-          'Released ${document.documentNo} as Rev $revision',
-          documentNo:
-          document.documentNo,
-          timestamp:
-          DateTime.now(),
-        ),
-      );
 
-      await DccNotificationService.addNotification(
-        DccNotification(
-          id:
-          'DOCUMENT_RELEASED_${document.id}_${DateTime.now().microsecondsSinceEpoch}',
-          recipientEmail:
-          document.createdByEmail,
-          title:
-          'Document Released',
-          message:
-          '${document.documentNo} Rev $revision has been released by DCC.',
-          type:
-          'DOCUMENT_RELEASED',
-          documentNo:
-          document.documentNo,
-          createdAt:
-          DateTime.now(),
-        ),
-      );
+      // DCC activity. Failure must not undo the release.
+      try {
+        await DccActivityService.addActivity(
+          DccActivity(
+            id: DateTime.now().microsecondsSinceEpoch.toString(),
+            userEmail: user.email,
+            userName: user.name,
+            action: 'DOCUMENT_RELEASED',
+            description:
+            'Released ${document.documentNo} as Rev $revision',
+            documentNo: document.documentNo,
+            timestamp: DateTime.now(),
+          ),
+        );
+      } catch (e) {
+        debugPrint('DCC release activity failed: $e');
+      }
+
+      // Notify document owner.
+      try {
+        await DccNotificationService.addNotification(
+          DccNotification(
+            id: 'DOCUMENT_RELEASED_${document.id}',
+            recipientEmail: document.createdByEmail,
+            title: 'Document Released',
+            message:
+            '${document.documentNo} Rev $revision has been released by DCC.',
+            type: 'DOCUMENT_RELEASED',
+            documentNo: document.documentNo,
+            createdAt: DateTime.now(),
+          ),
+        );
+      } catch (e) {
+        debugPrint('USER release notification failed: $e');
+      }
 
       if (!mounted) {
         return;
@@ -370,13 +379,16 @@ class _DccDocumentReviewScreenState
         return;
       }
 
+      setState(() {
+        _isProcessing = false;
+      });
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             'Unable to release document: $e',
           ),
-          duration:
-          const Duration(seconds: 5),
+          duration: const Duration(seconds: 5),
         ),
       );
     }
@@ -503,6 +515,11 @@ class _DccDocumentReviewScreenState
 
       final updatedDocument = DccDocument(
         id: document.id,
+        folderName: document.folderName,
+        releasedPdfPath: document.releasedPdfPath,
+        releasedPdfName: document.releasedPdfName,
+        releasedByName: document.releasedByName,
+        releasedByEmail: document.releasedByEmail,
         documentNo: document.documentNo,
         documentName: document.documentName,
         documentType: document.documentType,
@@ -533,41 +550,43 @@ class _DccDocumentReviewScreenState
         updatedDocument,
       );
 
-      await DccActivityService.addActivity(
-        DccActivity(
-          id: DateTime.now()
-              .microsecondsSinceEpoch
-              .toString(),
-          userEmail: user.email,
-          userName: user.name,
-          action: 'DOCUMENT_REJECTED',
-          description:
-          'Rejected ${document.documentNo}. Reason: ${reason.trim()}',
-          documentNo:
-          document.documentNo,
-          timestamp:
-          DateTime.now(),
-        ),
-      );
 
-      await DccNotificationService.addNotification(
-        DccNotification(
-          id:
-          'DOCUMENT_REJECTED_${document.id}_${DateTime.now().microsecondsSinceEpoch}',
-          recipientEmail:
-          document.createdByEmail,
-          title:
-          'Document Rejected by DCC',
-          message:
-          '${document.documentNo} was rejected by DCC. Reason: ${reason.trim()}',
-          type:
-          'DOCUMENT_REJECTED',
-          documentNo:
-          document.documentNo,
-          createdAt:
-          DateTime.now(),
-        ),
-      );
+      // DCC activity.
+      try {
+        await DccActivityService.addActivity(
+          DccActivity(
+            id: DateTime.now().microsecondsSinceEpoch.toString(),
+            userEmail: user.email,
+            userName: user.name,
+            action: 'DOCUMENT_REJECTED',
+            description:
+            'Rejected ${document.documentNo}. Reason: ${reason.trim()}',
+            documentNo: document.documentNo,
+            timestamp: DateTime.now(),
+          ),
+        );
+      } catch (e) {
+        debugPrint('DCC rejection activity failed: $e');
+      }
+
+      // Notify USER.
+      try {
+        await DccNotificationService.addNotification(
+          DccNotification(
+            id: 'DOCUMENT_REJECTED_${document.id}',
+            recipientEmail: document.createdByEmail,
+            title: 'Document Rejected by DCC',
+            message:
+            '${document.documentNo} was rejected by DCC. '
+                'Reason: ${reason.trim()}',
+            type: 'DOCUMENT_REJECTED',
+            documentNo: document.documentNo,
+            createdAt: DateTime.now(),
+          ),
+        );
+      } catch (e) {
+        debugPrint('USER DCC rejection notification failed: $e');
+      }
 
       if (!mounted) {
         return;

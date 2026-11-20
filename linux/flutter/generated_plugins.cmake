@@ -6,10 +6,10 @@ list(APPEND FLUTTER_PLUGIN_LIST
   file_saver
   file_selector_linux
   gtk
-  media_kit_video
   printing
   screen_retriever_linux
   url_launcher_linux
+  media_kit_video
   window_manager
 )
 

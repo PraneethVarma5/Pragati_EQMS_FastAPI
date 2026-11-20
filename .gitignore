@@ -1,64 +1,76 @@
-# Miscellaneous
-*.class
-*.log
-*.pyc
-*.swp
-.DS_Store
-.atom/
-.build/
-.buildlog/
-.history
-.svn/
-.swiftpm/
-migrate_working_dir/
 
-# IntelliJ related
-*.iml
-*.ipr
-*.iws
-.idea/
-
-# The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
-#.vscode/
-
-# Flutter/Dart/Pub related
-**/doc/api/
-**/ios/Flutter/.last_build_id
-.dart_tool/
-.flutter-plugins-dependencies
-.pub-cache/
-.pub/
-/build/
-/coverage/
-
-# Symbolication related
-app.*.symbols
-
-# Obfuscation related
-app.*.map.json
-
-# Android Studio will place build artifacts here
-/android/app/debug
-/android/app/profile
-/android/app/release
-.env
-
-@"
-.dart_tool/
-.flutter-plugins
-.flutter-plugins-dependencies
-.packages
-.pub-cache/
-build/
-.idea/
-.vscode/
-android/local.properties
+# Secrets
 .env
 .env.*
 !.env.example
-supabase/.temp/
-*.jks
-*.keystore
-"@ | Out-File -Encoding utf8 .gitignore
+backend/.env
+backend/.env.*
+!backend/.env.example
+Passwords.md
+
+# Backup archives
+*.zip
+
+# Local uploaded documents
+backend/storage/
+
+# Flutter generated files
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+build/
+
+# Generated security scan build
+security_testing/app_scan/
+
+# Windows build binaries
+windows/runner/*.exe
+windows/runner/*.dll
+windows/runner/*.pdb
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+.pytest_cache/
+
+# IDE and OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Flutter generated metadata
+.flutter-plugins
+.flutter-plugins-dependencies
+.metadata
+
+# Generated Windows runtime binaries
+windows/runner/runtimes/
+
+# Flutter generated metadata
+.flutter-plugins
+.flutter-plugins-dependencies
+.metadata
+
+# Generated Windows runtime binaries
+windows/runner/runtimes/
+
+# Generated Windows runner configuration
+windows/runner/*.deps.json
+windows/runner/*.runtimeconfig.json
+
+# Security testing output and generated scans
+security_testing/

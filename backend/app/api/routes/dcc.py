@@ -274,14 +274,78 @@ def master_data_upsert(body: RowBody, user: dict[str, Any] = Depends(_current_us
     return dict(row) if row else {"success":True}
 
 @router.post("/notifications/read-all")
-def notifications_read_all(user: dict[str, Any] = Depends(_current_user), db: Session = Depends(get_db)):
-    db.execute(text("UPDATE dcc_notifications SET is_read=TRUE WHERE LOWER(recipient_email)=LOWER(:e) AND is_read=FALSE"), {"e":user["email"]})
-    db.commit(); return {"success":True}
+def notifications_read_all(
+    user: dict[str, Any] = Depends(_current_user),
+    db: Session = Depends(get_db),
+):
+    role = str(user["role"]).upper()
+
+    if role == "DCC":
+        db.execute(
+            text("""
+                UPDATE dcc_notifications
+                SET is_read = TRUE
+                WHERE is_read = FALSE
+                  AND (
+                      UPPER(recipient_email) = 'DCC_TEAM'
+                      OR LOWER(recipient_email) IN (
+                          SELECT LOWER(email)
+                          FROM dcc_users
+                          WHERE UPPER(role) = 'DCC'
+                            AND active = TRUE
+                            AND deleted_at IS NULL
+                      )
+                  )
+            """)
+        )
+    else:
+        db.execute(
+            text("""
+                UPDATE dcc_notifications
+                SET is_read = TRUE
+                WHERE LOWER(recipient_email) = LOWER(:email)
+                  AND is_read = FALSE
+            """),
+            {"email": user["email"]},
+        )
+
+    db.commit()
+    return {"success": True}
 
 @router.delete("/notifications/clear")
-def notifications_clear(user: dict[str, Any] = Depends(_current_user), db: Session = Depends(get_db)):
-    result=db.execute(text("DELETE FROM dcc_notifications WHERE LOWER(recipient_email)=LOWER(:e)"), {"e":user["email"]})
-    db.commit(); return {"success":True,"deleted":result.rowcount}
+def notifications_clear(
+    user: dict[str, Any] = Depends(_current_user),
+    db: Session = Depends(get_db),
+):
+    role = str(user["role"]).upper()
+
+    if role == "DCC":
+        result = db.execute(
+            text("""
+                DELETE FROM dcc_notifications
+                WHERE
+                    UPPER(recipient_email) = 'DCC_TEAM'
+                    OR LOWER(recipient_email) IN (
+                        SELECT LOWER(email)
+                        FROM dcc_users
+                        WHERE UPPER(role) = 'DCC'
+                          AND active = TRUE
+                          AND deleted_at IS NULL
+                    )
+            """)
+        )
+    else:
+        result = db.execute(
+            text("""
+                DELETE FROM dcc_notifications
+                WHERE LOWER(recipient_email) = LOWER(:email)
+            """),
+            {"email": user["email"]},
+        )
+
+    db.commit()
+    return {"success": True, "deleted": result.rowcount}
+
 @router.get("/{resource}")
 def list_resource(
     resource: str,
@@ -452,6 +516,29 @@ def list_resource(
                 )
 
             params["email"] = user["email"]
+        
+        elif role == "DCC":
+            if resource == "activities":
+                clauses.append(
+                    "LOWER(user_email)=LOWER(:email)"
+                )
+                params["email"] = user["email"]
+
+            if resource == "notifications":
+                clauses.append(
+                    """
+                    (
+                        UPPER(recipient_email) = 'DCC_TEAM'
+                        OR LOWER(recipient_email) IN (
+                            SELECT LOWER(email)
+                            FROM dcc_users
+                            WHERE UPPER(role) = 'DCC'
+                              AND active = TRUE
+                              AND deleted_at IS NULL
+                        )
+                    )
+                    """
+                )
 
     # ---------------------------------------------------------
     # EMAIL FILTER
@@ -645,6 +732,7 @@ def get_resource(resource: str, row_id: str, user: dict[str, Any] = Depends(_cur
         owner = row.get("created_by_email") or row.get("requested_by_email") or row.get("user_email") or row.get("recipient_email")
         if owner and owner.lower() != user["email"].lower():
             raise HTTPException(403, "Not authorized.")
+    
     elif role == "HOD":
         if resource == "dmr-requests" and str(row.get("hod_email") or "").lower() != user["email"].lower():
             raise HTTPException(403, "This DMR is not assigned to your HOD account.")
@@ -652,6 +740,34 @@ def get_resource(resource: str, row_id: str, user: dict[str, Any] = Depends(_cur
             raise HTTPException(403, "This document is not assigned to your HOD account.")
         if resource == "notifications" and str(row.get("recipient_email") or "").lower() != user["email"].lower():
             raise HTTPException(403, "Not authorized.")
+
+    elif role == "DCC" and resource == "notifications":
+        recipient = str(row.get("recipient_email") or "").strip()
+
+        is_team_notification = recipient.upper() == "DCC_TEAM"
+
+        is_legacy_dcc_notification = False
+
+        if not is_team_notification and recipient:
+            is_legacy_dcc_notification = bool(
+                db.execute(
+                    text("""
+                        SELECT EXISTS (
+                            SELECT 1
+                            FROM dcc_users
+                            WHERE LOWER(email) = LOWER(:email)
+                              AND UPPER(role) = 'DCC'
+                              AND active = TRUE
+                              AND deleted_at IS NULL
+                        )
+                    """),
+                    {"email": recipient},
+                ).scalar()
+            )
+
+        if not is_team_notification and not is_legacy_dcc_notification:
+            raise HTTPException(403, "Not authorized.")
+
     return dict(row)
 
 @router.post("/{resource}")
@@ -679,8 +795,250 @@ def create_resource(resource: str, body: RowBody, user: dict[str, Any] = Depends
         elif role == "HOD":
             data["created_by_email"] = user["email"]
             data["created_by_name"] = user["name"]
-    if resource == "notifications" and role not in {"ADMIN","DCC"}:
-        data["recipient_email"] = user["email"]
+    
+
+    if resource == "notifications" and role in {"USER", "HOD"}:
+        recipient = str(data.get("recipient_email") or "").strip()
+        notification_type = str(data.get("type") or "").strip().upper()
+        document_no = str(data.get("document_no") or "").strip()
+
+        if not recipient:
+            raise HTTPException(
+                status_code=400,
+                detail="Notification recipient is required.",
+            )
+
+        # ---------------------------------------------------------
+        # USER NOTIFICATIONS
+        # ---------------------------------------------------------
+        if role == "USER":
+
+            # Main DCC workflow: USER submits a document request.
+            if notification_type == "DOCUMENT_REQUEST_SUBMITTED":
+
+                if recipient.upper() != "DCC_TEAM":
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Document requests can only notify the shared DCC team.",
+                    )
+
+                request_exists = db.execute(
+                    text("""
+                        SELECT EXISTS (
+                            SELECT 1
+                            FROM dcc_document_requests
+                            WHERE LOWER(user_email) = LOWER(:email)
+                            AND UPPER(COALESCE(status, '')) = 'PENDING'
+                        )
+                    """),
+                    {"email": user["email"]},
+                ).scalar()
+
+                if not request_exists:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="No pending document request was found for this account.",
+                    )
+            
+            elif notification_type == "DOCUMENT_SUBMITTED_FOR_HOD":
+
+                if not document_no:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Document number is required.",
+                    )
+
+                document = db.execute(
+                    text("""
+                        SELECT hod_email
+                        FROM dcc_documents
+                        WHERE LOWER(document_no) = LOWER(:document_no)
+                          AND LOWER(created_by_email) = LOWER(:email)
+                        LIMIT 1
+                    """),
+                    {
+                        "document_no": document_no,
+                        "email": user["email"],
+                    },
+                ).mappings().first()
+
+                if not document:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="You are not authorized to notify for this document.",
+                    )
+
+                if recipient.lower() != str(
+                    document["hod_email"] or ""
+                ).lower():
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Document submission must notify its assigned HOD.",
+                    )
+
+
+            # Existing DMR workflow: USER submits DMR or revised document.
+            else:
+
+                if not document_no:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="DMR notifications require a document number.",
+                    )
+
+                dmr = db.execute(
+                    text("""
+                        SELECT requested_by_email, hod_email, revised_file_path
+                        FROM dcc_dmr_requests
+                        WHERE LOWER(document_no) = LOWER(:document_no)
+                        AND LOWER(requested_by_email) = LOWER(:email)
+                        ORDER BY created_date DESC
+                        LIMIT 1
+                    """),
+                    {
+                        "document_no": document_no,
+                        "email": user["email"],
+                    },
+                ).mappings().first()
+
+                if not dmr:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="You are not authorized to create notifications for this DMR.",
+                    )
+
+                if notification_type == "DMR_SUBMITTED":
+
+                    if recipient.lower() != str(dmr["hod_email"] or "").lower():
+                        raise HTTPException(
+                            status_code=403,
+                            detail="A DMR submission can only notify its assigned HOD.",
+                        )
+
+                elif recipient.upper() == "DCC_TEAM":
+
+                    if not dmr["revised_file_path"]:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="The revised document must be submitted before notifying DCC.",
+                        )
+
+                else:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="This notification recipient is not permitted for USER accounts.",
+                    )
+
+        # ---------------------------------------------------------
+        # HOD NOTIFICATIONS
+        # Existing DMR notification rules remain unchanged.
+        # ---------------------------------------------------------
+        elif role == "HOD":
+
+            if notification_type in {
+                "DOCUMENT_HOD_APPROVED",
+                "DOCUMENT_HOD_REJECTED",
+                "DOCUMENT_READY_FOR_DCC",
+            }:
+
+                if not document_no:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Document number is required.",
+                    )
+
+                document = db.execute(
+                    text("""
+                        SELECT created_by_email, hod_email
+                        FROM dcc_documents
+                        WHERE LOWER(document_no) = LOWER(:document_no)
+                          AND LOWER(hod_email) = LOWER(:email)
+                        LIMIT 1
+                    """),
+                    {
+                        "document_no": document_no,
+                        "email": user["email"],
+                    },
+                ).mappings().first()
+
+                if not document:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="This document is not assigned to your HOD account.",
+                    )
+
+                if notification_type in {
+                    "DOCUMENT_HOD_APPROVED",
+                    "DOCUMENT_HOD_REJECTED",
+                }:
+                    if recipient.lower() != str(
+                        document["created_by_email"] or ""
+                    ).lower():
+                        raise HTTPException(
+                            status_code=403,
+                            detail="HOD document notifications must go to the document owner.",
+                        )
+
+                elif notification_type == "DOCUMENT_READY_FOR_DCC":
+                    if recipient.upper() != "DCC_TEAM":
+                        raise HTTPException(
+                            status_code=403,
+                            detail="Approved documents must notify the shared DCC team.",
+                        )
+        else:
+            # Existing DMR notification validation.
+            if not document_no:
+                raise HTTPException(
+                    status_code=400,
+                    detail="DMR notifications require a document number.",
+                                        )
+            dmr = db.execute(
+                text("""
+                        SELECT requested_by_email, hod_email
+                        FROM dcc_dmr_requests
+                        WHERE LOWER(document_no) = LOWER(:document_no)
+                          AND LOWER(hod_email) = LOWER(:email)
+                        ORDER BY created_date DESC
+                        LIMIT 1
+                    """),
+                    {
+                        "document_no": document_no,
+                        "email": user["email"],
+                    },
+                ).mappings().first()
+
+            if not dmr:
+                raise HTTPException(
+                        status_code=403,
+                        detail="This DMR is not assigned to your HOD account.",
+                    )
+
+            if notification_type in {
+                    "DMR_HOD_APPROVED",
+                    "DMR_HOD_REJECTED",
+                }:
+                    if recipient.lower() != str(
+                        dmr["requested_by_email"] or ""
+                    ).lower():
+                        raise HTTPException(
+                            status_code=403,
+                            detail="HOD notifications must be sent to the DMR requester.",
+                        )
+
+            elif notification_type == "DMR_READY_FOR_DCC":
+                if recipient.upper() != "DCC_TEAM":
+                    raise HTTPException(
+                            status_code=403,
+                            detail="Approved DMR notifications must go to the shared DCC team.",
+                        )
+
+            else:
+                raise HTTPException(
+                        status_code=403,
+                        detail="This notification type is not permitted for HOD accounts.",
+                    )
+                
+                
     keys = list(data)
     params = {f"v_{k}": v for k,v in data.items()}
     sql = f"INSERT INTO {table} ({','.join(keys)}) VALUES ({','.join(':'+f'v_{k}' for k in keys)})"
@@ -712,11 +1070,52 @@ def update_resource(resource: str, row_id: str, body: RowBody,
                 data = {k:v for k,v in data.items() if k in {"status","updated_at"}}
             else:
                 data = {k:v for k,v in data.items() if k in {"is_read"}}
+        
         elif role == "HOD":
-            if resource == "dmr-requests" and str(existing.get("hod_email") or "").lower() != user["email"].lower(): raise HTTPException(403, "This DMR is not assigned to your HOD account.")
-            if resource == "notifications" and str(existing.get("recipient_email") or "").lower() != user["email"].lower(): raise HTTPException(403, "Not authorized.")
-            if resource == "dmr-requests": data={k:v for k,v in data.items() if k in {"status","rejection_reason","hod_action_date","modification_access_granted","updated_at"}}
-            if resource == "notifications": data={k:v for k,v in data.items() if k in {"is_read"}}
+            if resource == "dmr-requests" and str(existing.get("hod_email") or "").lower() != user["email"].lower():
+                raise HTTPException(403, "This DMR is not assigned to your HOD account.")
+
+            if resource == "notifications" and str(existing.get("recipient_email") or "").lower() != user["email"].lower():
+                raise HTTPException(403, "Not authorized.")
+
+            if resource == "dmr-requests":
+                data = {
+                    k: v for k, v in data.items()
+                    if k in {"status", "rejection_reason", "hod_action_date", "modification_access_granted", "updated_at"}
+                }
+
+            if resource == "notifications":
+                data = {k: v for k, v in data.items() if k in {"is_read"}}
+
+        elif role == "DCC" and resource == "notifications":
+            recipient = str(existing.get("recipient_email") or "").strip()
+
+            is_team_notification = recipient.upper() == "DCC_TEAM"
+
+            is_legacy_dcc_notification = False
+
+            if not is_team_notification and recipient:
+                is_legacy_dcc_notification = bool(
+                    db.execute(
+                        text("""
+                            SELECT EXISTS (
+                                SELECT 1
+                                FROM dcc_users
+                                WHERE LOWER(email) = LOWER(:email)
+                                  AND UPPER(role) = 'DCC'
+                                  AND active = TRUE
+                                  AND deleted_at IS NULL
+                            )
+                        """),
+                        {"email": recipient},
+                    ).scalar()
+                )
+
+            if not is_team_notification and not is_legacy_dcc_notification:
+                raise HTTPException(403, "Not authorized.")
+
+            # DCC can update the shared read state only.
+            data = {k: v for k, v in data.items() if k in {"is_read"}}
     if resource == "documents":
         existing = db.execute(text("SELECT created_by_email,hod_email FROM dcc_documents WHERE id=:id"), {"id": row_id}).mappings().first()
         if not existing: raise HTTPException(404, "Document not found.")
@@ -730,9 +1129,24 @@ def update_resource(resource: str, row_id: str, body: RowBody,
         elif role == "HOD":
             allowed_hod_fields = {"status", "rejection_reason", "hod_action_at", "updated_at"}
             data = {k: v for k, v in data.items() if k in allowed_hod_fields}
-    params = {f"v_{k}": v for k,v in data.items()}; params["row_id"] = row_id
-    sets = ",".join(f"{k}=:{'v_'+k}" for k in data)
-    result = db.execute(text(f"UPDATE {table} SET {sets} WHERE {key}=:row_id"), params)
+    
+    if not data:
+        raise HTTPException(
+            status_code=400,
+            detail="No permitted fields supplied for this update.",
+        )
+
+    params = {f"v_{k}": v for k, v in data.items()}
+    params["row_id"] = row_id
+
+    sets = ",".join(
+        f"{k}=:v_{k}" for k in data
+    )
+
+    result = db.execute(
+        text(f"UPDATE {table} SET {sets} WHERE {key}=:row_id"),
+        params,
+    )
     db.commit()
     if result.rowcount == 0: raise HTTPException(404, "Record not found.")
     return {"success": True}
@@ -745,21 +1159,64 @@ def delete_file(path: str = Query(...), user: dict[str, Any] = Depends(_current_
     return {"success": True}
 
 @router.delete("/{resource}/{row_id}")
-def delete_resource(resource: str, row_id: str, user: dict[str, Any] = Depends(_current_user), db: Session = Depends(get_db)):
-    if resource not in TABLES: raise HTTPException(404, "Unknown DCC resource.")
+def delete_resource(
+    resource: str,
+    row_id: str,
+    user: dict[str, Any] = Depends(_current_user),
+    db: Session = Depends(get_db),
+):
+    if resource not in TABLES:
+        raise HTTPException(404, "Unknown DCC resource.")
+
     table, cols = TABLES[resource]
     role = str(user["role"]).upper()
     key = "document_no" if resource == "master-data" else "id"
-    if resource == "notifications" and role in {"USER","HOD"}:
-        result = db.execute(text("DELETE FROM dcc_notifications WHERE id=:id AND LOWER(recipient_email)=LOWER(:email)"), {"id":row_id,"email":user["email"]})
-        db.commit(); return {"success":result.rowcount>0}
-    _require(user, "ADMIN","DCC")
-    if resource == "documents":
-        # Document deletion is intentionally limited to Admin/DCC.
-        pass
+
+    # USER and HOD can delete only their own notifications.
+    if resource == "notifications" and role in {"USER", "HOD"}:
+        result = db.execute(
+            text("""
+                DELETE FROM dcc_notifications
+                WHERE id = :id
+                  AND LOWER(recipient_email) = LOWER(:email)
+            """),
+            {"id": row_id, "email": user["email"]},
+        )
+        db.commit()
+        return {"success": result.rowcount > 0}
+
+    # DCC can delete only shared-team or legacy DCC notifications.
+    if resource == "notifications" and role == "DCC":
+        result = db.execute(
+            text("""
+                DELETE FROM dcc_notifications
+                WHERE id = :id
+                  AND (
+                      UPPER(recipient_email) = 'DCC_TEAM'
+                      OR LOWER(recipient_email) IN (
+                          SELECT LOWER(email)
+                          FROM dcc_users
+                          WHERE UPPER(role) = 'DCC'
+                            AND active = TRUE
+                            AND deleted_at IS NULL
+                      )
+                  )
+            """),
+            {"id": row_id},
+        )
+        db.commit()
+        return {"success": result.rowcount > 0}
+
+    _require(user, "ADMIN", "DCC")
+
     if resource == "activities":
         raise HTTPException(405, "Activity records cannot be deleted.")
-    result = db.execute(text(f"DELETE FROM {table} WHERE {key}=:id"), {"id": row_id})
+
+    result = db.execute(
+        text(f"DELETE FROM {table} WHERE {key} = :id"),
+        {"id": row_id},
+    )
+
     db.commit()
     return {"success": result.rowcount > 0}
 

@@ -28,9 +28,6 @@ class _HodDocumentReviewScreenState
   bool _isProcessing = false;
   bool _isOpening = false;
 
-  static const List<String> _dccEmails = [
-    'officer@eqms.com',
-  ];
 
   DccDocument get document => widget.document;
 
@@ -164,12 +161,15 @@ class _HodDocumentReviewScreenState
     await _processApproval();
   }
 
+
   Future<void> _processApproval() async {
     final user = DccSession.currentUser;
 
     if (user == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('DCC session not found.')),
+        const SnackBar(
+          content: Text('HOD session not found. Please login again.'),
+        ),
       );
       return;
     }
@@ -179,9 +179,14 @@ class _HodDocumentReviewScreenState
     });
 
     try {
-      // CORE OPERATION: Move document into DCC queue.
+      // CORE OPERATION: Send document to DCC.
       final updatedDocument = DccDocument(
         id: document.id,
+        folderName: document.folderName,
+        releasedPdfPath: document.releasedPdfPath,
+        releasedPdfName: document.releasedPdfName,
+        releasedByName: document.releasedByName,
+        releasedByEmail: document.releasedByEmail,
         documentNo: document.documentNo,
         documentName: document.documentName,
         documentType: document.documentType,
@@ -202,22 +207,25 @@ class _HodDocumentReviewScreenState
 
       await DccDocumentService.updateDocument(updatedDocument);
 
-      // Record approval.
-      await DccActivityService.addActivity(
-        DccActivity(
-          id: DateTime.now().microsecondsSinceEpoch.toString(),
-          userEmail: user.email,
-          userName: user.name,
-          action: 'DOCUMENT_HOD_APPROVED',
-          description:
-          '${document.documentNo} approved by HOD and sent to DCC',
-          documentNo: document.documentNo,
-          timestamp: DateTime.now(),
-        ),
-      );
+      // HOD activity.
+      try {
+        await DccActivityService.addActivity(
+          DccActivity(
+            id: DateTime.now().microsecondsSinceEpoch.toString(),
+            userEmail: user.email,
+            userName: user.name,
+            action: 'DOCUMENT_HOD_APPROVED',
+            description:
+            '${document.documentNo} approved by HOD and sent to DCC',
+            documentNo: document.documentNo,
+            timestamp: DateTime.now(),
+          ),
+        );
+      } catch (e) {
+        debugPrint('HOD approval activity failed: $e');
+      }
 
-      // Notifications are secondary.
-      // Their failure must not invalidate a successful approval.
+      // Notify USER.
       try {
         await DccNotificationService.addNotification(
           DccNotification(
@@ -233,20 +241,26 @@ class _HodDocumentReviewScreenState
           ),
         );
       } catch (e) {
-        debugPrint('Requester notification failed: $e');
+        debugPrint('USER approval notification failed: $e');
       }
 
+      // One shared notification for all DCC users.
       try {
-        await DccNotificationService.notifyAllDcc(
-          title: 'Document Ready for DCC Review',
-          message:
-          '${document.documentNo} was approved by '
-              '${user.name} and is ready for DCC review.',
-          type: 'DOCUMENT_READY_FOR_DCC',
-          documentNo: document.documentNo,
+        await DccNotificationService.addNotification(
+          DccNotification(
+            id: 'DOC_READY_DCC_${document.id}',
+            recipientEmail: 'DCC_TEAM',
+            title: 'Document Ready for DCC Review',
+            message:
+            '${document.documentNo} was approved by '
+                '${user.name} and is ready for DCC review.',
+            type: 'DOCUMENT_READY_FOR_DCC',
+            documentNo: document.documentNo,
+            createdAt: DateTime.now(),
+          ),
         );
       } catch (e) {
-        debugPrint('DCC notification failed: $e');
+        debugPrint('DCC team notification failed: $e');
       }
 
       if (!mounted) return;
@@ -258,19 +272,7 @@ class _HodDocumentReviewScreenState
       await showDialog(
         context: context,
         builder: (_) => AlertDialog(
-          title: const Row(
-            children: [
-              Icon(
-                Icons.check_circle_rounded,
-                color: Color(0xFF2E8B57),
-              ),
-              SizedBox(width: 10),
-              Text(
-                'Document Approved',
-                style: TextStyle(fontWeight: FontWeight.w800),
-              ),
-            ],
-          ),
+          title: const Text('Document Approved'),
           content: Text(
             '${document.documentNo} has been approved and sent to DCC.',
           ),
@@ -301,6 +303,7 @@ class _HodDocumentReviewScreenState
       );
     }
   }
+
   Future<void> _rejectDocument() async {
     final controller = TextEditingController();
 
@@ -390,9 +393,8 @@ class _HodDocumentReviewScreenState
     );
   }
 
-  Future<void> _processRejection(
-      String reason,
-      ) async {
+
+  Future<void> _processRejection(String reason) async {
     final user = DccSession.currentUser;
 
     if (user == null) {
@@ -406,6 +408,11 @@ class _HodDocumentReviewScreenState
     try {
       final updatedDocument = DccDocument(
         id: document.id,
+        folderName: document.folderName,
+        releasedPdfPath: document.releasedPdfPath,
+        releasedPdfName: document.releasedPdfName,
+        releasedByName: document.releasedByName,
+        releasedByEmail: document.releasedByEmail,
         documentNo: document.documentNo,
         documentName: document.documentName,
         documentType: document.documentType,
@@ -424,44 +431,47 @@ class _HodDocumentReviewScreenState
         rejectionReason: reason,
       );
 
-      await DccDocumentService.updateDocument(
-        updatedDocument,
-      );
+      // CORE OPERATION.
+      await DccDocumentService.updateDocument(updatedDocument);
 
-      await DccActivityService.addActivity(
-        DccActivity(
-          id: DateTime.now()
-              .microsecondsSinceEpoch
-              .toString(),
-          userEmail: user.email,
-          userName: user.name,
-          action: 'DOCUMENT_HOD_REJECTED',
-          description:
-          '${document.documentNo} rejected by HOD',
-          documentNo: document.documentNo,
-          timestamp: DateTime.now(),
-        ),
-      );
-
-      await DccNotificationService.addNotification(
-        DccNotification(
-          id:
-          'DOC_HOD_REJECTED_USER_${document.id}',
-          recipientEmail:
-          document.createdByEmail,
-          title: 'Document Rejected by HOD',
-          message:
-          '${document.documentNo} was rejected by '
-              '${user.name}. Reason: $reason',
-          type: 'DOCUMENT_HOD_REJECTED',
-          documentNo: document.documentNo,
-          createdAt: DateTime.now(),
-        ),
-      );
-
-      if (!mounted) {
-        return;
+      // HOD activity.
+      try {
+        await DccActivityService.addActivity(
+          DccActivity(
+            id: DateTime.now().microsecondsSinceEpoch.toString(),
+            userEmail: user.email,
+            userName: user.name,
+            action: 'DOCUMENT_HOD_REJECTED',
+            description:
+            '${document.documentNo} rejected by HOD. Reason: $reason',
+            documentNo: document.documentNo,
+            timestamp: DateTime.now(),
+          ),
+        );
+      } catch (e) {
+        debugPrint('HOD rejection activity failed: $e');
       }
+
+      // Notify USER.
+      try {
+        await DccNotificationService.addNotification(
+          DccNotification(
+            id: 'DOC_HOD_REJECTED_USER_${document.id}',
+            recipientEmail: document.createdByEmail,
+            title: 'Document Rejected by HOD',
+            message:
+            '${document.documentNo} was rejected by '
+                '${user.name}. Reason: $reason',
+            type: 'DOCUMENT_HOD_REJECTED',
+            documentNo: document.documentNo,
+            createdAt: DateTime.now(),
+          ),
+        );
+      } catch (e) {
+        debugPrint('USER rejection notification failed: $e');
+      }
+
+      if (!mounted) return;
 
       setState(() {
         _isProcessing = false;
@@ -469,47 +479,25 @@ class _HodDocumentReviewScreenState
 
       await showDialog(
         context: context,
-        builder: (_) {
-          return AlertDialog(
-            title: const Row(
-              children: [
-                Icon(
-                  Icons.info_outline_rounded,
-                  color: Color(0xFFD64545),
-                ),
-                SizedBox(width: 10),
-                Text(
-                  'Document Rejected',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ],
+        builder: (_) => AlertDialog(
+          title: const Text('Document Rejected'),
+          content: Text(
+            '${document.documentNo} has been rejected.\n\nReason:\n$reason',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
             ),
-            content: Text(
-              '${document.documentNo} has been rejected.\n\nReason:\n$reason',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () {
-                  Navigator.pop(context);
-                },
-                child: const Text('Close'),
-              ),
-            ],
-          );
-        },
+          ],
+        ),
       );
 
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       Navigator.pop(context, true);
     } catch (e) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       setState(() {
         _isProcessing = false;
@@ -517,9 +505,7 @@ class _HodDocumentReviewScreenState
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'Unable to reject document: $e',
-          ),
+          content: Text('Unable to reject document: $e'),
         ),
       );
     }

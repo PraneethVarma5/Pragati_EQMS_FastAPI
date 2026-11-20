@@ -258,60 +258,61 @@ class _HodDmrRequestsScreenState
 
       final hod = DccSession.currentUser;
 
+// 1. Activity logging is secondary.
+// Failure here must not cancel the approval.
       if (hod != null) {
-        await DccActivityService.addActivity(
-          DccActivity(
-            id: DateTime.now()
-                .microsecondsSinceEpoch
-                .toString(),
-            userEmail: hod.email,
-            userName: hod.name,
-            action: 'DMR_HOD_APPROVED',
-            description:
-            '${request.documentNo} modification request approved by HOD and sent to DCC.',
-            documentNo:
-            request.documentNo,
-            timestamp: DateTime.now(),
-          ),
-        );
+        try {
+          await DccActivityService.addActivity(
+            DccActivity(
+              id: DateTime.now()
+                  .microsecondsSinceEpoch
+                  .toString(),
+              userEmail: hod.email,
+              userName: hod.name,
+              action: 'DMR_HOD_APPROVED',
+              description:
+              '${request.documentNo} modification request approved by HOD and sent to DCC.',
+              documentNo: request.documentNo,
+              timestamp: DateTime.now(),
+            ),
+          );
+        } catch (e) {
+          debugPrint('DMR activity logging failed: $e');
+        }
       }
 
-      // Notify the User.
-      await DccNotificationService
-          .addNotification(
-        DccNotification(
-          id:
-          'DMR_APPROVED_USER_${request.id}',
-          recipientEmail:
-          request.requestedByEmail,
-          title:
-          'DMR Approved by HOD',
+// 2. Notify the requesting user.
+      try {
+        await DccNotificationService.addNotification(
+          DccNotification(
+            id: 'DMR_APPROVED_USER_${request.id}',
+            recipientEmail: request.requestedByEmail,
+            title: 'DMR Approved by HOD',
+            message:
+            '${request.documentNo} has been approved by '
+                '${request.hodName} and sent to DCC for review.',
+            type: 'DMR_HOD_APPROVED',
+            documentNo: request.documentNo,
+            createdAt: DateTime.now(),
+          ),
+        );
+      } catch (e) {
+        debugPrint('DMR user notification failed: $e');
+      }
+
+// 3. Notify DCC users.
+      try {
+        await DccNotificationService.notifyAllDcc(
+          title: 'DMR Ready for DCC Review',
           message:
-          '${request.documentNo} has been approved by '
-              '${request.hodName} and sent to DCC for review.',
-          type:
-          'DMR_HOD_APPROVED',
-          documentNo:
-          request.documentNo,
-          createdAt:
-          DateTime.now(),
-        ),
-      );
-
-      // Notify every hardcoded DCC account.
-      // Notify every active DCC user.
-      await DccNotificationService.notifyAllDcc(
-        title:
-        'DMR Ready for DCC Review',
-        message:
-        '${request.documentNo} modification request '
-            'was approved by ${request.hodName}.',
-        type:
-        'DMR_READY_FOR_DCC',
-        documentNo:
-        request.documentNo,
-      );
-
+          '${request.documentNo} modification request '
+              'was approved by ${request.hodName}.',
+          type: 'DMR_READY_FOR_DCC',
+          documentNo: request.documentNo,
+        );
+      } catch (e) {
+        debugPrint('DMR DCC notification failed: $e');
+      }
       if (!mounted) {
         return;
       }
