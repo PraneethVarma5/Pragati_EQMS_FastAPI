@@ -1,70 +1,147 @@
-import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'ccr_api_client.dart';
 import 'ccr_session.dart';
 
 class CcrAuthService {
   CcrAuthService._();
 
-  static final SupabaseClient _supabase =
-      Supabase.instance.client;
+  // ============================================================
+  // NORMALIZE API USER RESPONSE
+  // ============================================================
+
+  static Map<String, dynamic> _normalizeUserData(
+      Map<String, dynamic> data,
+      ) {
+    final normalized = Map<String, dynamic>.from(data);
+
+    // Support nested or top-level user responses.
+    final rawUser = normalized['user'];
+
+    final userData = rawUser is Map
+        ? Map<String, dynamic>.from(rawUser)
+        : normalized;
+
+    // Backend user_id -> Flutter id
+    userData['id'] ??= userData['user_id'];
+
+    // Support both password field spellings.
+    userData['must_change_password'] ??=
+        userData['must_change_passwor'] ??
+            userData['must_change_password'];
+
+    // Keep full name available.
+    userData['full_name'] ??=
+        userData['fullName'] ??
+            userData['email'] ??
+            '';
+
+    // Normalize role.
+    userData['role'] ??= 'user';
+
+    // Normalize active status.
+    userData['is_active'] ??= true;
+
+    return userData;
+  }
+
+  // ============================================================
+  // LOGIN
+  // ============================================================
 
   static Future<CcrUser> login({
     required String email,
     required String password,
   }) async {
-    final cleanEmail =
-    email.trim().toLowerCase();
+    final response = await CcrApiClient.post(
+      '/auth/login',
+      authenticated: false,
+      body: {
+        'email': email.trim(),
+        'password': password,
+      },
+    );
 
-    final cleanPassword =
-    password.trim();
+    if (response is! Map) {
+      throw Exception('Invalid login response from the server.');
+    }
 
-    if (cleanEmail.isEmpty) {
+    final data = Map<String, dynamic>.from(response);
+
+    final token = data['session_token']?.toString() ?? '';
+
+    if (token.trim().isEmpty) {
       throw Exception(
-        'Email address is required.',
+        'Login failed: session token was not returned.',
       );
     }
 
-    if (cleanPassword.isEmpty) {
+    final userData = _normalizeUserData(data);
+
+    if (userData['id'] == null ||
+        userData['email'] == null ||
+        userData['email'].toString().trim().isEmpty) {
       throw Exception(
-        'Password is required.',
+        'Login response is missing required user details. '
+            'Received keys: ${data.keys.join(', ')}',
       );
+    }
+
+    final user = CcrUser.fromMap(userData);
+
+    if (!user.isActive) {
+      throw Exception('This account is inactive.');
+    }
+
+    await CcrSession.setSession(
+      user: user,
+      sessionToken: token,
+    );
+
+    return user;
+  }
+
+  // ============================================================
+  // VALIDATE EXISTING SESSION
+  // ============================================================
+
+  static Future<CcrUser?> validateSession() async {
+    if (!CcrSession.isLoggedIn) {
+      return null;
     }
 
     try {
-      final response =
-      await _supabase.rpc(
-        'ccr_login',
-        params: {
-          'p_email': cleanEmail,
-          'p_password': cleanPassword,
-        },
+      final response = await CcrApiClient.get(
+        '/auth/session',
+        authenticated: true,
       );
 
-      if (response == null ||
-          response is! Map) {
-        throw Exception(
-          'Invalid login response.',
-        );
+      if (response is! Map) {
+        await CcrSession.clear();
+        return null;
       }
 
-      final data =
-      Map<String, dynamic>.from(
-        response,
-      );
+      final data = Map<String, dynamic>.from(response);
+      final userData = _normalizeUserData(data);
 
-      final token =
-      data['session_token']
-          ?.toString();
-
-      if (token == null ||
-          token.isEmpty) {
-        throw Exception(
-          'Login session was not created.',
-        );
+      if (userData['id'] == null ||
+          userData['email'] == null) {
+        await CcrSession.clear();
+        return null;
       }
 
-      final user =
-      CcrUser.fromMap(data);
+      final user = CcrUser.fromMap(userData);
+
+      if (!user.isActive) {
+        await CcrSession.clear();
+        return null;
+      }
+
+      final token = CcrSession.sessionToken;
+
+      if (token == null || token.trim().isEmpty) {
+        await CcrSession.clear();
+        return null;
+      }
 
       await CcrSession.setSession(
         user: user,
@@ -72,89 +149,22 @@ class CcrAuthService {
       );
 
       return user;
-    } on PostgrestException catch (e) {
-      throw Exception(e.message);
-    } catch (e) {
-      if (e is Exception) {
-        rethrow;
-      }
-
-      throw Exception(
-        'Unable to login.',
-      );
+    } catch (_) {
+      await CcrSession.clear();
+      return null;
     }
   }
 
-  static Future<CcrUser> validateSession() async {
-    final token =
-        CcrSession.sessionToken;
-
-    if (token == null ||
-        token.trim().isEmpty) {
-      throw Exception(
-        'CCR session has expired.',
-      );
-    }
-
-    try {
-      final response =
-      await _supabase.rpc(
-        'ccr_validate_session',
-        params: {
-          'p_session_token':
-          token,
-        },
-      );
-
-      if (response == null ||
-          response is! Map) {
-        throw Exception(
-          'Invalid session response.',
-        );
-      }
-
-      final user =
-      CcrUser.fromMap(
-        Map<String, dynamic>.from(
-          response,
-        ),
-      );
-
-      await CcrSession.setSession(
-        user: user,
-        sessionToken: token,
-      );
-
-      return user;
-    } on PostgrestException catch (e) {
-      await CcrSession.clear();
-      throw Exception(e.message);
-    } catch (e) {
-      await CcrSession.clear();
-
-      if (e is Exception) {
-        rethrow;
-      }
-
-      throw Exception(
-        'CCR session has expired.',
-      );
-    }
-  }
+  // ============================================================
+  // LOGOUT
+  // ============================================================
 
   static Future<void> logout() async {
-    final token =
-        CcrSession.sessionToken;
-
     try {
-      if (token != null &&
-          token.trim().isNotEmpty) {
-        await _supabase.rpc(
-          'ccr_logout',
-          params: {
-            'p_session_token':
-            token,
-          },
+      if (CcrSession.sessionToken != null) {
+        await CcrApiClient.post(
+          '/auth/logout',
+          authenticated: true,
         );
       }
     } finally {
@@ -162,125 +172,81 @@ class CcrAuthService {
     }
   }
 
+  // ============================================================
+  // CHANGE PASSWORD (LOGGED-IN USER)
+  // ============================================================
+
   static Future<void> changePassword({
     required String currentPassword,
     required String newPassword,
   }) async {
-    final token =
-        CcrSession.sessionToken;
+    final response = await CcrApiClient.post(
+      '/auth/change-password',
+      authenticated: true,
+      body: {
+        'current_password': currentPassword,
+        'new_password': newPassword,
+      },
+    );
 
-    if (token == null ||
-        token.trim().isEmpty) {
+    if (response is Map && response['success'] == false) {
       throw Exception(
-        'Please login first.',
+        response['message']?.toString() ??
+            response['detail']?.toString() ??
+            'Password change failed.',
       );
     }
 
-    if (newPassword.trim().length < 6) {
-      throw Exception(
-        'New password must contain at least 6 characters.',
-      );
-    }
+    final currentUser = CcrSession.currentUser;
 
-    try {
-      await _supabase.rpc(
-        'ccr_change_password',
-        params: {
-          'p_session_token':
-          token,
-          'p_current_password':
-          currentPassword.trim(),
-          'p_new_password':
-          newPassword.trim(),
-        },
+    if (currentUser != null) {
+      final updatedUser = CcrUser(
+        id: currentUser.id,
+        fullName: currentUser.fullName,
+        email: currentUser.email,
+        role: currentUser.role,
+        isActive: currentUser.isActive,
+        mustChangePassword: false,
       );
 
-      final user =
-          CcrSession.currentUser;
+      final token = CcrSession.sessionToken;
 
-      if (user != null) {
+      if (token != null && token.isNotEmpty) {
         await CcrSession.setSession(
-          user: CcrUser(
-            id: user.id,
-            fullName: user.fullName,
-            email: user.email,
-            role: user.role,
-            isActive: user.isActive,
-            mustChangePassword: false,
-          ),
+          user: updatedUser,
           sessionToken: token,
         );
       }
-    } on PostgrestException catch (e) {
-      throw Exception(e.message);
     }
   }
+
   // ============================================================
-// CHANGE PASSWORD FROM LOGIN PAGE
-// ============================================================
+  // CHANGE PASSWORD BEFORE LOGIN
+  // ============================================================
 
   static Future<void> changePasswordFromLogin({
     required String email,
     required String currentPassword,
     required String newPassword,
   }) async {
-    final normalizedEmail =
-    email.trim().toLowerCase();
+    final response = await CcrApiClient.post(
+      '/auth/change-password-from-login',
+      authenticated: false,
+      body: {
+        'email': email.trim(),
+        'current_password': currentPassword,
+        'new_password': newPassword,
+      },
+    );
 
-    final current =
-    currentPassword.trim();
-
-    final next =
-    newPassword.trim();
-
-    if (normalizedEmail.isEmpty) {
+    if (response is! Map || response['success'] != true) {
       throw Exception(
-        'Email address is required.',
+        response is Map
+            ? response['message']?.toString() ??
+            response['detail']?.toString() ??
+            'Password change failed.'
+            : 'Invalid response from the server.',
       );
-    }
-
-    if (current.isEmpty) {
-      throw Exception(
-        'Current password is required.',
-      );
-    }
-
-    if (next.isEmpty) {
-      throw Exception(
-        'New password is required.',
-      );
-    }
-
-    if (next.length < 8) {
-      throw Exception(
-        'New password must contain at least 8 characters.',
-      );
-    }
-
-    if (current == next) {
-      throw Exception(
-        'New password must be different from the current password.',
-      );
-    }
-
-    try {
-      final response =
-      await _supabase.rpc(
-        'ccr_change_password_from_login',
-        params: {
-          'p_email': normalizedEmail,
-          'p_current_password': current,
-          'p_new_password': next,
-        },
-      );
-
-      if (response != true) {
-        throw Exception(
-          'Password could not be changed.',
-        );
-      }
-    } on PostgrestException catch (e) {
-      throw Exception(e.message);
     }
   }
 }

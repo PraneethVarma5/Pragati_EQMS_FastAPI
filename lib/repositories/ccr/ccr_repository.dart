@@ -1,58 +1,28 @@
-import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../../services/ccr/ccr_api_client.dart';
 
 class CcrRepository {
-  CcrRepository({
-    SupabaseClient? client,
-  }) : _client = client ?? Supabase.instance.client;
-
-  final SupabaseClient _client;
+  CcrRepository();
 
   // ============================================================
   // CCR LIST
   // ============================================================
 
   Future<List<Map<String, dynamic>>> getCcrCases() async {
-    final response = await _client
-        .from('ccr_cases')
-        .select('''
-          id,
-          ccr_number,
-          status,
-          current_stage,
-          complaint_date,
-          complaint_source,
-          customer_name,
-          team_leader,
-          group_name,
-          customer_contact_name,
-          customer_contact_position,
-          customer_contact_company,
-          customer_part_number,
-supplier_part_number,
-part_description,
-part_no,
-complaint_description,
-qty,
-problem_description,
-customer_location,
+    final response = await CcrApiClient.get('/cases');
 
-          detected_date,
-          detected_by,
-          created_at,
-          updated_at,
-          ccr_statuses!fk_ccr_cases_status (
-            status_name
-          ),
-          ccr_workflow_stages!fk_ccr_cases_stage (
-            stage_name
-          )
-        ''')
-        .order(
-      'created_at',
-      ascending: false,
-    );
+    if (response is! List) {
+      throw Exception(
+        'Invalid response received while loading CCR cases.',
+      );
+    }
 
-    return List<Map<String, dynamic>>.from(response);
+    return response
+        .whereType<Map>()
+        .map(
+          (item) => Map<String, dynamic>.from(item),
+    )
+        .toList();
   }
 
   // ============================================================
@@ -60,14 +30,21 @@ customer_location,
   // ============================================================
 
   Future<Map<String, dynamic>> createCcr() async {
-    final response = await _client
-        .from('ccr_cases')
-        .insert({
-      'status': 'draft',
-      'current_stage': 'registration',
-    })
-        .select()
-        .single();
+    final response = await CcrApiClient.post(
+      '/cases',
+      body: {
+        'data': {
+          'status': 'draft',
+          'current_stage': 'registration',
+        },
+      },
+    );
+
+    if (response is! Map) {
+      throw Exception(
+        'Invalid response received while creating CCR.',
+      );
+    }
 
     return Map<String, dynamic>.from(response);
   }
@@ -85,48 +62,25 @@ customer_location,
       return null;
     }
 
-    final response = await _client
-        .from('ccr_cases')
-        .select('''
-      id,
-      ccr_number,
-      status,
-      current_stage,
-      complaint_date,
-      complaint_source,
-      customer_name,
-      team_leader,
-      group_name,
-      customer_contact_name,
-      customer_contact_position,
-      customer_contact_company,
-      customer_part_number,
-      supplier_part_number,
-      part_description,
-      part_no,
-      complaint_description,
-      qty,
-      problem_description,
-      customer_location,
-      detected_date,
-      detected_by,
-      created_at,
-      updated_at,
-      ccr_statuses!fk_ccr_cases_status (
-        status_name
-      ),
-      ccr_workflow_stages!fk_ccr_cases_stage (
-        stage_name
-      )
-    ''')
-        .eq('id', cleanId)
-        .maybeSingle();
+    try {
+      final response = await CcrApiClient.get(
+        '/cases/$cleanId',
+      );
 
-    if (response == null) {
-      return null;
+      if (response is! Map) {
+        return null;
+      }
+
+      return Map<String, dynamic>.from(response);
+    } catch (e) {
+      // Supabase maybeSingle() previously returned null when
+      // the requested case did not exist. Preserve that behavior.
+      if (e.toString().contains('CCR case not found')) {
+        return null;
+      }
+
+      rethrow;
     }
-
-    return Map<String, dynamic>.from(response);
   }
 
   // ============================================================
@@ -156,36 +110,42 @@ customer_location,
       throw Exception('CCR ID is missing.');
     }
 
-    final response = await _client
-        .from('ccr_cases')
-        .update({
-      'complaint_date':
-      complaintDate?.toIso8601String().split('T').first,
-      'complaint_source': _cleanNullable(complaintSource),
-      'customer_name': _cleanNullable(customerName),
-      'team_leader': _cleanNullable(teamLeader),
-      'group_name': _cleanNullable(groupName),
-      'customer_contact_name':
-      _cleanNullable(customerContactName),
-      'customer_contact_position':
-      _cleanNullable(customerContactPosition),
-      'customer_contact_company':
-      _cleanNullable(customerContactCompany),
-      'customer_part_number':
-      _cleanNullable(customerPartNumber),
-      'supplier_part_number':
-      _cleanNullable(supplierPartNumber),
-      'problem_description':
-      _cleanNullable(problemDescription),
-      'customer_location':
-      _cleanNullable(customerLocation),
-      'detected_date':
-      detectedDate?.toIso8601String().split('T').first,
-      'detected_by': _cleanNullable(detectedBy),
-    })
-        .eq('id', cleanId)
-        .select()
-        .single();
+    final response = await CcrApiClient.patch(
+      '/cases/$cleanId',
+      body: {
+        'data': {
+          'complaint_date':
+          complaintDate?.toIso8601String().split('T').first,
+          'complaint_source': _cleanNullable(complaintSource),
+          'customer_name': _cleanNullable(customerName),
+          'team_leader': _cleanNullable(teamLeader),
+          'group_name': _cleanNullable(groupName),
+          'customer_contact_name':
+          _cleanNullable(customerContactName),
+          'customer_contact_position':
+          _cleanNullable(customerContactPosition),
+          'customer_contact_company':
+          _cleanNullable(customerContactCompany),
+          'customer_part_number':
+          _cleanNullable(customerPartNumber),
+          'supplier_part_number':
+          _cleanNullable(supplierPartNumber),
+          'problem_description':
+          _cleanNullable(problemDescription),
+          'customer_location':
+          _cleanNullable(customerLocation),
+          'detected_date':
+          detectedDate?.toIso8601String().split('T').first,
+          'detected_by': _cleanNullable(detectedBy),
+        },
+      },
+    );
+
+    if (response is! Map) {
+      throw Exception(
+        'Invalid response received while updating CCR registration.',
+      );
+    }
 
     return Map<String, dynamic>.from(response);
   }
@@ -209,12 +169,12 @@ customer_location,
       throw Exception('CCR stage is missing.');
     }
 
-    await _client
-        .from('ccr_cases')
-        .update({
-      'current_stage': cleanStage,
-    })
-        .eq('id', cleanId);
+    await CcrApiClient.patch(
+      '/cases/$cleanId/stage',
+      query: {
+        'stage_key': cleanStage,
+      },
+    );
   }
 
   // ============================================================
@@ -236,13 +196,17 @@ customer_location,
       throw Exception('CCR status is missing.');
     }
 
-    await _client
-        .from('ccr_cases')
-        .update({
-      'status': cleanStatus,
-    })
-        .eq('id', cleanId);
+    await CcrApiClient.patch(
+      '/cases/$cleanId/status',
+      query: {
+        'status_key': cleanStatus,
+      },
+    );
   }
+
+  // ============================================================
+  // STRING HELPER
+  // ============================================================
 
   String? _cleanNullable(String? value) {
     if (value == null) {

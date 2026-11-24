@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 from app.api.routes import audit_auth, audit_auditors, audit_operations, dcc
 from app.core.config import get_settings
 from app.db.session import engine
+from app.api.routes import ccr
+
 
 settings = get_settings()
 
@@ -27,7 +29,7 @@ app.include_router(audit_auth.router, prefix=settings.api_v1_prefix)
 app.include_router(audit_auditors.router, prefix=settings.api_v1_prefix)
 app.include_router(audit_operations.router, prefix=settings.api_v1_prefix)
 app.include_router(dcc.router, prefix=settings.api_v1_prefix)
-
+app.include_router(ccr.router,prefix=settings.api_v1_prefix)
 
 @app.get("/health")
 def health():

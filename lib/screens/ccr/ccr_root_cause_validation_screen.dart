@@ -151,6 +151,7 @@ class _CcrRootCauseValidationScreenState
 
     try {
       await _service.saveValidation(
+        ccrId: widget.ccrId,
         fishboneCauseId: item.fishboneCauseId,
         validationText: controller?.text.trim() ?? '',
         relevance: relevance,
@@ -199,6 +200,7 @@ class _CcrRootCauseValidationScreenState
         }
 
         await _service.saveValidation(
+          ccrId: widget.ccrId,
           fishboneCauseId: item.fishboneCauseId,
           validationText:
           _controllers[item.fishboneCauseId]?.text.trim() ?? '',
@@ -318,6 +320,7 @@ class _CcrRootCauseValidationScreenState
         }
 
         await _service.saveValidation(
+          ccrId: widget.ccrId,
           fishboneCauseId: item.fishboneCauseId,
           validationText:
           _controllers[item.fishboneCauseId]?.text.trim() ?? '',

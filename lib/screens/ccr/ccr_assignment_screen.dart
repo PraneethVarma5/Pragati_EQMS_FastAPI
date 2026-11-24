@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-
+import '../../services/ccr/ccr_api_client.dart';
 import '../../models/ccr/ccr_assignment.dart';
 import '../../models/ccr/ccr_case.dart';
 import '../../services/ccr/ccr_assignment_service.dart';
@@ -240,30 +239,9 @@ class _CcrAssignmentScreenState
       // Read the stage that the database actually moved to.
       // ----------------------------------------------------------
 
-      final currentCase = await Supabase
-          .instance
-          .client
-          .from('ccr_cases')
-          .select('current_stage')
-          .eq(
-        'id',
+      final nextStage = await _service.getCurrentStage(
         widget.ccrId,
-      )
-          .single();
-
-      final nextStage =
-      currentCase['current_stage']
-          ?.toString()
-          .trim()
-          .toLowerCase();
-
-      if (nextStage == null ||
-          nextStage.isEmpty) {
-        throw Exception(
-          'Assignment completed but the next CCR workflow stage could not be determined.',
-        );
-      }
-
+      );
       if (!mounted) return;
 
       _message(
@@ -1176,49 +1154,65 @@ class _AssignmentDialogState
 
 
   Future<void> _loadStatuses() async {
+    if (!mounted) return;
+
+    setState(() {
+      _loadingStatuses = true;
+      _statusLoadError = null;
+    });
+
     try {
-      final client = Supabase.instance.client;
-
-      debugPrint('========== STATUS DIAGNOSTICS ==========');
-      debugPrint('Supabase URL: ${client.rest.url}');
-      debugPrint(
-        'Current user: ${client.auth.currentUser?.id ?? "NOT LOGGED IN"}',
-      );
-      debugPrint(
-        'Current session: ${client.auth.currentSession != null}',
+      final response = await CcrApiClient.get(
+        '/assignment-statuses',
+        authenticated: false,
       );
 
-      // Diagnostic query: no filters or ordering.
-      final response = await Supabase.instance.client
-          .from('ccr_assignment_statuses')
-          .select('status_key, status_name, is_active, display_order')
-          .eq('is_active', true)
-          .order('display_order', ascending: true);
+      if (response is! List) {
+        throw Exception(
+          'Invalid assignment statuses response from server.',
+        );
+      }
 
-      debugPrint('RAW STATUS RESPONSE: $response');
-      debugPrint('STATUS COUNT: ${response.length}');
-      debugPrint('========================================');
+      final statuses = response
+          .map(
+            (item) => Map<String, dynamic>.from(item as Map),
+      )
+          .toList();
 
       if (!mounted) return;
 
       setState(() {
-        _statuses = List<Map<String, dynamic>>.from(response);
+        _statuses = statuses;
+
+        if (!_statuses.any(
+              (item) =>
+          item['status_key']?.toString() == _statusKey,
+        )) {
+          _statusKey = _statuses.any(
+                (item) =>
+            item['status_key']?.toString() == 'pending',
+          )
+              ? 'pending'
+              : (_statuses.isNotEmpty
+              ? _statuses.first['status_key']?.toString()
+              : null);
+        }
+
         _loadingStatuses = false;
         _statusLoadError = null;
       });
-    } catch (e, stackTrace) {
-      debugPrint('STATUS QUERY ERROR: $e');
-      debugPrintStack(stackTrace: stackTrace);
+    } catch (e) {
+      debugPrint('CCR ASSIGNMENT STATUS ERROR: $e');
 
       if (!mounted) return;
 
       setState(() {
+        _statuses = [];
         _loadingStatuses = false;
         _statusLoadError = e.toString();
       });
     }
   }
-
 
   @override
   void dispose() {

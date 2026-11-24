@@ -4,30 +4,27 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../services/ccr/ccr_api_client.dart';
 
 import 'ccr_containment_screen.dart';
 import '../../services/ccr/ccr_team_service.dart';
 
 class CcrRegistrationScreen extends StatefulWidget {
-final String ccrId;
+  final String ccrId;
 
-const CcrRegistrationScreen({
-super.key,
-required this.ccrId,
-});
+  const CcrRegistrationScreen({
+    super.key,
+    required this.ccrId,
+  });
 
-@override
-State<CcrRegistrationScreen> createState() =>
-_CcrRegistrationScreenState();
+  @override
+  State<CcrRegistrationScreen> createState() =>
+      _CcrRegistrationScreenState();
 }
 
 class _CcrRegistrationScreenState
-extends State<CcrRegistrationScreen> {
-final SupabaseClient _supabase =
-Supabase.instance.client;
-
-final ImagePicker _imagePicker = ImagePicker();
+    extends State<CcrRegistrationScreen> {
+  final ImagePicker _imagePicker = ImagePicker();
 
 // ============================================================
 // REGISTRATION FIELDS
@@ -88,210 +85,195 @@ final ImagePicker _imagePicker = ImagePicker();
 // STATE
 // ============================================================
 
-bool _loading = true;
-bool _saving = false;
-bool _completing = false;
+  bool _loading = true;
+  bool _saving = false;
+  bool _completing = false;
 
-String? _error;
+  String? _error;
 
-Map<String, dynamic>? _ccr;
+  Map<String, dynamic>? _ccr;
 
-String? _stageName;
-String? _statusName;
+  String? _stageName;
+  String? _statusName;
 
-List<Map<String, dynamic>> _attachments =
-<Map<String, dynamic>>[];
+  List<Map<String, dynamic>> _attachments =
+  <Map<String, dynamic>>[];
 
 // ============================================================
 // CCR TEAM
 // ============================================================
 
-List<Map<String, dynamic>> _availableTeams =
-<Map<String, dynamic>>[];
+  List<Map<String, dynamic>> _availableTeams =
+  <Map<String, dynamic>>[];
 
-String? _selectedTeamId;
+  String? _selectedTeamId;
 
-String? _selectedTeamLeaderName;
+  String? _selectedTeamLeaderName;
 
-List<String> _selectedTeamMembers =
-<String>[];
+  List<String> _selectedTeamMembers =
+  <String>[];
 
-bool _loadingTeams = false;
+  bool _loadingTeams = false;
 
 // ============================================================
 // PENDING PHOTOS
 // ============================================================
 
-final List<_PendingPhoto> _pendingPhotos =
-<_PendingPhoto>[];
+  final List<_PendingPhoto> _pendingPhotos =
+  <_PendingPhoto>[];
 
 // ============================================================
 // CUSTOMER COMPLAINT DOCUMENT
 // ============================================================
 
-_PendingDocument? _pendingCustomerDocument;
+  _PendingDocument? _pendingCustomerDocument;
 
-Map<String, dynamic>?
-_savedCustomerComplaintDocument;
+  Map<String, dynamic>?
+  _savedCustomerComplaintDocument;
 
 // ============================================================
 // INIT
 // ============================================================
 
-@override
-void initState() {
-super.initState();
-_loadRegistration();
-}
+  @override
+  void initState() {
+    super.initState();
+    _loadRegistration();
+  }
 
 // ============================================================
 // LOAD REGISTRATION
 // ============================================================
 
-Future<void> _loadRegistration() async {
-if (!mounted) return;
+  Future<void> _loadRegistration() async {
+    if (!mounted) return;
 
-setState(() {
-_loading = true;
-_loadingTeams = true;
-_error = null;
-});
+    setState(() {
+      _loading = true;
+      _loadingTeams = true;
+      _error = null;
+    });
 
-try {
-final dynamic rawCcr = await _supabase
-    .from('ccr_cases')
-    .select('''
-            *,
-            ccr_statuses!fk_ccr_cases_status(
-              status_name
-            ),
-            ccr_workflow_stages!fk_ccr_cases_stage(
-              stage_name
-            )
-          ''')
-    .eq('id', widget.ccrId)
-    .maybeSingle();
+    try {
+      final dynamic rawCcr = await CcrApiClient.get(
+        '/cases/${widget.ccrId}',
+      );
 
-if (rawCcr == null) {
-throw Exception(
-'Customer complaint could not be found.',
-);
-}
+      if (rawCcr == null || rawCcr is! Map) {
+        throw Exception('Customer complaint could not be found.');
+      }
 
-final Map<String, dynamic> ccr =
-Map<String, dynamic>.from(rawCcr);
+      final Map<String, dynamic> ccr =
+      Map<String, dynamic>.from(rawCcr);
 
-final dynamic rawAttachments = await _supabase
-    .from('ccr_attachments')
-    .select()
-    .eq('ccr_id', widget.ccrId)
-    .eq('is_deleted', false)
-    .order(
-'uploaded_at',
-ascending: false,
-);
+      final dynamic rawAttachments = await CcrApiClient.get(
+        '/cases/${widget.ccrId}/attachments',
+      );
 
-final List<Map<String, dynamic>> attachments =
-List<Map<String, dynamic>>.from(
-rawAttachments,
-);
+      final List<Map<String, dynamic>> attachments =
+      rawAttachments is List
+          ? rawAttachments
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList()
+          : <Map<String, dynamic>>[];
 
-final availableTeams =
-await CcrTeamService
-    .getActiveTeamsForSelection();
+      final availableTeams =
+      await CcrTeamService
+          .getActiveTeamsForSelection();
 
-_ccr = ccr;
+      _ccr = ccr;
 
-_stageName = _extractNestedName(
-ccr['ccr_workflow_stages'],
-'stage_name',
-);
+      _stageName = _extractNestedName(
+        ccr['ccr_workflow_stages'],
+        'stage_name',
+      );
 
-_statusName = _extractNestedName(
-ccr['ccr_statuses'],
-'status_name',
-);
+      _statusName = _extractNestedName(
+        ccr['ccr_statuses'],
+        'status_name',
+      );
 
-_populateCase(ccr);
+      _populateCase(ccr);
 
-_attachments = attachments;
+      _attachments = attachments;
 
 // ----------------------------------------------------------
 // CUSTOMER COMPLAINT DOCUMENT
 // ----------------------------------------------------------
 
-_savedCustomerComplaintDocument = null;
+      _savedCustomerComplaintDocument = null;
 
-for (final attachment in _attachments) {
-final attachmentType =
-attachment['attachment_type']
-    ?.toString();
+      for (final attachment in _attachments) {
+        final attachmentType =
+        attachment['attachment_type']
+            ?.toString();
 
-if (attachmentType ==
-'customer_complaint_document') {
-_savedCustomerComplaintDocument =
-attachment;
-break;
-}
-}
+        if (attachmentType ==
+            'customer_complaint_document') {
+          _savedCustomerComplaintDocument =
+              attachment;
+          break;
+        }
+      }
 
 // ----------------------------------------------------------
 // TEAM
 // ----------------------------------------------------------
 
-_availableTeams =
-List<Map<String, dynamic>>.from(
-availableTeams,
-);
+      _availableTeams =
+      List<Map<String, dynamic>>.from(
+        availableTeams,
+      );
 
-final existingTeamId =
-ccr['team_id']?.toString();
+      final existingTeamId =
+      ccr['team_id']?.toString();
 
-if (existingTeamId != null &&
-existingTeamId.trim().isNotEmpty) {
-_selectTeamById(
-existingTeamId,
-updateState: false,
-);
-}
+      if (existingTeamId != null &&
+          existingTeamId.trim().isNotEmpty) {
+        _selectTeamById(
+          existingTeamId,
+          updateState: false,
+        );
+      }
 
-if (!mounted) return;
+      if (!mounted) return;
 
-setState(() {
-_loading = false;
-_loadingTeams = false;
-});
-} catch (e) {
-if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadingTeams = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
 
-setState(() {
-_loading = false;
-_loadingTeams = false;
-_error = _cleanError(e);
-});
-}
-}
+      setState(() {
+        _loading = false;
+        _loadingTeams = false;
+        _error = _cleanError(e);
+      });
+    }
+  }
 
 // ============================================================
 // NESTED VALUE
 // ============================================================
 
-String? _extractNestedName(
-dynamic value,
-String key,
-) {
-if (value is Map) {
-return value[key]?.toString();
-}
+  String? _extractNestedName(
+      dynamic value,
+      String key,
+      ) {
+    if (value is Map) {
+      return value[key]?.toString();
+    }
 
-if (value is List &&
-value.isNotEmpty &&
-value.first is Map) {
-return value.first[key]?.toString();
-}
+    if (value is List &&
+        value.isNotEmpty &&
+        value.first is Map) {
+      return value.first[key]?.toString();
+    }
 
-return null;
-}
+    return null;
+  }
 
 // ============================================================
 // POPULATE CASE
@@ -386,273 +368,197 @@ return null;
     );
   }
 
-void _setController(
-TextEditingController controller,
-dynamic value,
-) {
-controller.text =
-value?.toString() ?? '';
-}
+  void _setController(
+      TextEditingController controller,
+      dynamic value,
+      ) {
+    controller.text =
+        value?.toString() ?? '';
+  }
 
 // ============================================================
 // TEAM SELECTION
 // ============================================================
 
-void _selectTeamById(
-String? teamId, {
-bool updateState = true,
-}) {
-if (teamId == null ||
-teamId.trim().isEmpty) {
-void clear() {
-_selectedTeamId = null;
-_selectedTeamLeaderName = null;
-_selectedTeamMembers =
-<String>[];
-}
+  void _selectTeamById(
+      String? teamId, {
+        bool updateState = true,
+      }) {
+    if (teamId == null ||
+        teamId.trim().isEmpty) {
+      void clear() {
+        _selectedTeamId = null;
+        _selectedTeamLeaderName = null;
+        _selectedTeamMembers =
+        <String>[];
+      }
 
-if (updateState) {
-setState(clear);
-} else {
-clear();
-}
+      if (updateState) {
+        setState(clear);
+      } else {
+        clear();
+      }
 
-return;
-}
+      return;
+    }
 
-Map<String, dynamic>? team;
+    Map<String, dynamic>? team;
 
-for (final item in _availableTeams) {
-if (item['id']?.toString() == teamId) {
-team = item;
-break;
-}
-}
+    for (final item in _availableTeams) {
+      if (item['id']?.toString() == teamId) {
+        team = item;
+        break;
+      }
+    }
 
-if (team == null) {
-return;
-}
+    if (team == null) {
+      return;
+    }
 
-final leader =
-team['team_leader_name']
-    ?.toString()
-    .trim();
+    final leader =
+    team['team_leader_name']
+        ?.toString()
+        .trim();
 
-final members = <String>[];
+    final members = <String>[];
 
-final rawMembers = team['members'];
+    final rawMembers = team['members'];
 
-if (rawMembers is List) {
-for (final member in rawMembers) {
-if (member is Map) {
-final name =
-member['member_name']
-    ?.toString()
-    .trim();
+    if (rawMembers is List) {
+      for (final member in rawMembers) {
+        if (member is Map) {
+          final name =
+          member['member_name']
+              ?.toString()
+              .trim();
 
-if (name != null && name.isNotEmpty) {
-members.add(name);
-}
-}
-}
-}
+          if (name != null && name.isNotEmpty) {
+            members.add(name);
+          }
+        }
+      }
+    }
 
 // Fallback for nested data.
-if (members.isEmpty) {
-final rawNested =
-team['ccr_team_members'];
+    if (members.isEmpty) {
+      final rawNested =
+      team['ccr_team_members'];
 
-if (rawNested is List) {
-for (final member in rawNested) {
-if (member is Map) {
-final name =
-member['member_name']
-    ?.toString()
-    .trim();
+      if (rawNested is List) {
+        for (final member in rawNested) {
+          if (member is Map) {
+            final name =
+            member['member_name']
+                ?.toString()
+                .trim();
 
-if (name != null && name.isNotEmpty) {
-members.add(name);
-}
-}
-}
-}
-}
+            if (name != null && name.isNotEmpty) {
+              members.add(name);
+            }
+          }
+        }
+      }
+    }
 
-void apply() {
-_selectedTeamId = teamId;
-_selectedTeamLeaderName = leader;
-_selectedTeamMembers = members;
-}
+    void apply() {
+      _selectedTeamId = teamId;
+      _selectedTeamLeaderName = leader;
+      _selectedTeamMembers = members;
+    }
 
-if (updateState) {
-setState(apply);
-} else {
-apply();
-}
-}
+    if (updateState) {
+      setState(apply);
+    } else {
+      apply();
+    }
+  }
 
 // ============================================================
 // SAVE DRAFT
 // ============================================================
 
-Future<void> _saveDraft({
-bool closeAfterSave = false,
-}) async {
-if (_saving || _completing) {
-return;
-}
+  Future<void> _saveDraft({
+    bool closeAfterSave = false,
+  }) async {
+    if (_saving || _completing) {
+      return;
+    }
 
-setState(() {
-_saving = true;
-});
+    setState(() {
+      _saving = true;
+    });
 
-try {
-await _saveCase();
+    try {
+      await _saveCase();
 
-if (_selectedTeamId != null &&
-_selectedTeamId!.trim().isNotEmpty) {
-await CcrTeamService.saveCcrTeamSnapshot(
-ccrId: widget.ccrId,
-teamId: _selectedTeamId!,
-);
-}
+      if (_selectedTeamId != null &&
+          _selectedTeamId!.trim().isNotEmpty) {
+        await CcrTeamService.saveCcrTeamSnapshot(
+          ccrId: widget.ccrId,
+          teamId: _selectedTeamId!,
+        );
+      }
 
-await _uploadPendingPhotos();
+      await _uploadPendingPhotos();
 
-await _uploadPendingCustomerDocument();
+      await _uploadPendingCustomerDocument();
 
-await _refreshAfterSave();
+      await _refreshAfterSave();
 
-if (!mounted) return;
+      if (!mounted) return;
 
-_showMessage(
-'Registration draft saved successfully.',
-);
+      _showMessage(
+        'Registration draft saved successfully.',
+      );
 
-if (closeAfterSave) {
-Navigator.pop(context, true);
-}
-} catch (e) {
-if (!mounted) return;
+      if (closeAfterSave) {
+        Navigator.pop(context, true);
+      }
+    } catch (e) {
+      if (!mounted) return;
 
-_showMessage(
-_cleanError(e),
-isError: true,
-);
-} finally {
-if (mounted) {
-setState(() {
-_saving = false;
-});
-}
-}
-}
+      _showMessage(
+        _cleanError(e),
+        isError: true,
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _saving = false;
+        });
+      }
+    }
+  }
 
 // ============================================================
 // SAVE CASE
 // ============================================================
 
   Future<void> _saveCase() async {
-    await _supabase
-        .from('ccr_cases')
-        .update({
-      'complaint_date':
-      _nullableText(
-        _complaintDateController,
-      ),
-
-      'complaint_source':
-      _nullableText(
-        _complaintSourceController,
-      ),
-
-      'customer_name':
-      _nullableText(
-        _customerNameController,
-      ),
-
-      'group_name':
-      _nullableText(
-        _groupNameController,
-      ),
-
-      'customer_contact_name':
-      _nullableText(
-        _customerContactNameController,
-      ),
-
-      'customer_contact_position':
-      _nullableText(
-        _customerContactPositionController,
-      ),
-
-      'customer_contact_company':
-      _nullableText(
-        _customerContactCompanyController,
-      ),
-
-      'customer_location':
-      _nullableText(
-        _customerLocationController,
-      ),
-
-      'customer_part_number':
-      _nullableText(
-        _customerPartNumberController,
-      ),
-
-      'supplier_part_number':
-      _nullableText(
-        _supplierPartNumberController,
-      ),
-
-      'part_description':
-      _nullableText(
-        _partDescriptionController,
-      ),
-
-      'part_no':
-      _nullableText(
-        _partNoController,
-      ),
-
-      'qty':
-      _toNumber(
-        _qtyController,
-      ),
-
-      'complaint_description':
-      _nullableText(
-        _complaintDescriptionController,
-      ),
-
-      'problem_description':
-      _nullableText(
-        _problemDescriptionController,
-      ),
-
-      'detected_date':
-      _nullableText(
-        _detectedDateController,
-      ),
-
-      'detected_by':
-      _nullableText(
-        _detectedByController,
-      ),
-
-      'team_id':
-      _selectedTeamId,
-
-      'team_leader':
-      _selectedTeamLeaderName,
-
-      'updated_at':
-      DateTime.now().toIso8601String(),
-    })
-        .eq(
-      'id',
-      widget.ccrId,
+    await CcrApiClient.patch(
+      '/cases/${widget.ccrId}',
+      body: {
+        'data': {
+          'complaint_date': _nullableText(_complaintDateController),
+          'complaint_source': _nullableText(_complaintSourceController),
+          'customer_name': _nullableText(_customerNameController),
+          'group_name': _nullableText(_groupNameController),
+          'customer_contact_name': _nullableText(_customerContactNameController),
+          'customer_contact_position': _nullableText(_customerContactPositionController),
+          'customer_contact_company': _nullableText(_customerContactCompanyController),
+          'customer_location': _nullableText(_customerLocationController),
+          'customer_part_number': _nullableText(_customerPartNumberController),
+          'supplier_part_number': _nullableText(_supplierPartNumberController),
+          'part_description': _nullableText(_partDescriptionController),
+          'part_no': _nullableText(_partNoController),
+          'qty': _toNumber(_qtyController),
+          'complaint_description': _nullableText(_complaintDescriptionController),
+          'problem_description': _nullableText(_problemDescriptionController),
+          'detected_date': _nullableText(_detectedDateController),
+          'detected_by': _nullableText(_detectedByController),
+          'team_leader': _selectedTeamLeaderName,
+        },
+      },
     );
   }
 
@@ -660,274 +566,136 @@ _saving = false;
 // COMPLETE REGISTRATION
 // ============================================================
 
-Future<void> _completeRegistration() async {
-if (_saving || _completing) {
-return;
-}
+  Future<void> _completeRegistration() async {
+    if (_saving || _completing) return;
 
-final validationMessage =
-_validateForCompletion();
+    final validationMessage = _validateForCompletion();
+    if (validationMessage != null) {
+      _showMessage(validationMessage, isError: true);
+      return;
+    }
 
-if (validationMessage != null) {
-_showMessage(
-validationMessage,
-isError: true,
-);
-return;
-}
+    setState(() => _completing = true);
 
-setState(() {
-_completing = true;
-});
+    try {
+      final dynamic currentCaseRaw = await CcrApiClient.get(
+        '/cases/${widget.ccrId}',
+      );
+      if (currentCaseRaw is! Map) {
+        throw Exception('Customer complaint could not be found.');
+      }
 
-try {
-// ----------------------------------------------------------
-// GET CURRENT STAGE
-// ----------------------------------------------------------
+      final currentStageKey =
+      currentCaseRaw['current_stage']?.toString().trim();
+      if (currentStageKey == null || currentStageKey.isEmpty) {
+        throw Exception('Current CCR workflow stage is missing.');
+      }
 
-final currentCase = await _supabase
-    .from('ccr_cases')
-    .select('current_stage')
-    .eq(
-'id',
-widget.ccrId,
-)
-    .single();
+      final dynamic stagesRaw = await CcrApiClient.get(
+        '/workflow/stages',
+        query: {'active_only': 'true'},
+      );
+      final stages = stagesRaw is List
+          ? stagesRaw.whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row)).toList()
+          : <Map<String, dynamic>>[];
 
-final currentStageKey =
-currentCase['current_stage']
-    ?.toString()
-    .trim();
+      if (stages.isEmpty) {
+        throw Exception('No active CCR workflow stage is configured.');
+      }
 
-if (currentStageKey == null ||
-currentStageKey.isEmpty) {
-throw Exception(
-'Current CCR workflow stage is missing.',
-);
-}
+      stages.sort((a, b) =>
+          _displayOrder(a['display_order']).compareTo(
+            _displayOrder(b['display_order']),
+          ));
 
-// ----------------------------------------------------------
-// GET FIRST ACTIVE WORKFLOW STAGE
-// ----------------------------------------------------------
+      final firstStageKey = stages.first['stage_key']?.toString().trim();
+      if (firstStageKey == null || firstStageKey.isEmpty) {
+        throw Exception('Initial CCR workflow stage is missing.');
+      }
 
-final firstStage = await _supabase
-    .from('ccr_workflow_stages')
-    .select(
-'stage_key, stage_name, display_order',
-)
-    .eq(
-'is_active',
-true,
-)
-    .order(
-'display_order',
-ascending: true,
-)
-    .limit(1)
-    .maybeSingle();
+      if (currentStageKey != firstStageKey) {
+        throw Exception(
+          'Registration has already been completed. '
+              'The CCR is currently at "$currentStageKey".',
+        );
+      }
 
-if (firstStage == null) {
-throw Exception(
-'No active CCR workflow stage is configured.',
-);
-}
+      await _saveCase();
 
-final firstStageKey =
-firstStage['stage_key']
-    ?.toString()
-    .trim();
+      if (_selectedTeamId != null && _selectedTeamId!.trim().isNotEmpty) {
+        await CcrTeamService.saveCcrTeamSnapshot(
+          ccrId: widget.ccrId,
+          teamId: _selectedTeamId!,
+        );
+      }
 
-if (firstStageKey == null ||
-firstStageKey.isEmpty) {
-throw Exception(
-'Initial CCR workflow stage is missing.',
-);
-}
+      await _uploadPendingPhotos();
+      await _uploadPendingCustomerDocument();
 
-// ----------------------------------------------------------
-// REGISTRATION MUST BE THE CURRENT FIRST STAGE
-// ----------------------------------------------------------
+      final currentIndex = stages.indexWhere(
+            (stage) => stage['stage_key']?.toString() == currentStageKey,
+      );
+      if (currentIndex < 0) {
+        throw Exception(
+          'Current workflow stage is not active or is not configured.',
+        );
+      }
+      if (currentIndex + 1 >= stages.length) {
+        throw Exception('No next active CCR workflow stage is configured.');
+      }
 
-if (currentStageKey != firstStageKey) {
-throw Exception(
-'Registration has already been completed. '
-'The CCR is currently at "$currentStageKey".',
-);
-}
+      final nextStage = stages[currentIndex + 1];
+      final nextStageKey = nextStage['stage_key']?.toString().trim();
+      final nextStageName = nextStage['stage_name']?.toString().trim();
 
-// ----------------------------------------------------------
-// SAVE REGISTRATION DATA
-// ----------------------------------------------------------
+      if (nextStageKey == null || nextStageKey.isEmpty) {
+        throw Exception('Next CCR workflow stage is missing.');
+      }
 
-await _saveCase();
+      final dynamic advanced = await CcrApiClient.post(
+        '/cases/${widget.ccrId}/workflow/advance',
+      );
 
-if (_selectedTeamId != null &&
-_selectedTeamId!.trim().isNotEmpty) {
-await CcrTeamService.saveCcrTeamSnapshot(
-ccrId: widget.ccrId,
-teamId: _selectedTeamId!,
-);
-}
+      if (advanced is! Map ||
+          advanced['current_stage']?.toString() != nextStageKey) {
+        throw Exception(
+          'The CCR stage changed before Registration could be completed. '
+              'Please reload the complaint.',
+        );
+      }
 
-await _uploadPendingPhotos();
+      if (!mounted) return;
 
-await _uploadPendingCustomerDocument();
+      _showMessage(
+        'Registration completed. '
+            'Next stage: ${nextStageName ?? nextStageKey}.',
+      );
 
-// ----------------------------------------------------------
-// GET CURRENT DISPLAY ORDER
-// ----------------------------------------------------------
-
-final currentStage =
-await _supabase
-    .from('ccr_workflow_stages')
-    .select(
-'stage_key, stage_name, display_order',
-)
-    .eq(
-'stage_key',
-currentStageKey,
-)
-    .eq(
-'is_active',
-true,
-)
-    .maybeSingle();
-
-if (currentStage == null) {
-throw Exception(
-'Current workflow stage is not active or is not configured.',
-);
-}
-
-final currentOrder =
-_displayOrder(
-currentStage['display_order'],
-);
-
-// ----------------------------------------------------------
-// GET NEXT ACTIVE STAGE
-// ----------------------------------------------------------
-
-final nextStage = await _supabase
-    .from('ccr_workflow_stages')
-    .select(
-'stage_key, stage_name, display_order',
-)
-    .eq(
-'is_active',
-true,
-)
-    .gt(
-'display_order',
-currentOrder,
-)
-    .order(
-'display_order',
-ascending: true,
-)
-    .limit(1)
-    .maybeSingle();
-
-if (nextStage == null) {
-throw Exception(
-'No next active CCR workflow stage is configured.',
-);
-}
-
-final nextStageKey =
-nextStage['stage_key']
-    ?.toString()
-    .trim();
-
-final nextStageName =
-nextStage['stage_name']
-    ?.toString()
-    .trim();
-
-if (nextStageKey == null ||
-nextStageKey.isEmpty) {
-throw Exception(
-'Next CCR workflow stage is missing.',
-);
-}
-
-// ----------------------------------------------------------
-// MOVE CCR TO NEXT STAGE
-// ----------------------------------------------------------
-
-final updated = await _supabase
-    .from('ccr_cases')
-    .update({
-'current_stage': nextStageKey,
-'updated_at':
-DateTime.now().toIso8601String(),
-})
-    .eq(
-'id',
-widget.ccrId,
-)
-    .eq(
-'current_stage',
-currentStageKey,
-)
-    .select('id');
-
-if (updated.isEmpty) {
-throw Exception(
-'The CCR stage changed before Registration could be completed. '
-'Please reload the complaint.',
-);
-}
-
-if (!mounted) return;
-
-_showMessage(
-'Registration completed. '
-'Next stage: ${nextStageName ?? nextStageKey}.',
-);
-
-// ----------------------------------------------------------
-// NAVIGATE TO NEXT IMPLEMENTED STAGE
-//
-// The sequence/order comes from the database.
-// The screen class is selected only for an implemented
-// application stage.
-// ----------------------------------------------------------
-
-await _openNextStage(
-stageKey: nextStageKey,
-);
-} catch (e) {
-if (!mounted) return;
-
-_showMessage(
-_cleanError(e),
-isError: true,
-);
-} finally {
-if (mounted) {
-setState(() {
-_completing = false;
-});
-}
-}
-}
+      await _openNextStage(stageKey: nextStageKey);
+    } catch (e) {
+      if (!mounted) return;
+      _showMessage(_cleanError(e), isError: true);
+    } finally {
+      if (mounted) setState(() => _completing = false);
+    }
+  }
 
 // ============================================================
 // OPEN NEXT STAGE
 // ============================================================
 
-Future<void> _openNextStage({
-required String stageKey,
-}) async {
-final cleanStage =
-stageKey.trim().toLowerCase();
+  Future<void> _openNextStage({
+    required String stageKey,
+  }) async {
+    final cleanStage =
+    stageKey.trim().toLowerCase();
 
-if (cleanStage.isEmpty) {
-throw Exception(
-'Next CCR workflow stage is missing.',
-);
-}
+    if (cleanStage.isEmpty) {
+      throw Exception(
+        'Next CCR workflow stage is missing.',
+      );
+    }
 
 // ----------------------------------------------------------
 // Containment is currently the next implemented screen.
@@ -935,19 +703,19 @@ throw Exception(
 // The database determines that it is the next stage.
 // ----------------------------------------------------------
 
-if (cleanStage == 'containment') {
-await Navigator.pushReplacement(
-context,
-MaterialPageRoute(
-builder: (_) =>
-CcrContainmentScreen(
-ccrId: widget.ccrId,
-),
-),
-);
+    if (cleanStage == 'containment') {
+      await Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) =>
+              CcrContainmentScreen(
+                ccrId: widget.ccrId,
+              ),
+        ),
+      );
 
-return;
-}
+      return;
+    }
 
 // ----------------------------------------------------------
 // If the DB contains a stage for which the Flutter screen
@@ -955,62 +723,62 @@ return;
 // user Home.
 // ----------------------------------------------------------
 
-throw Exception(
-'The next CCR workflow stage "$stageKey" '
-'does not have an implemented screen yet.',
-);
-}
+    throw Exception(
+      'The next CCR workflow stage "$stageKey" '
+          'does not have an implemented screen yet.',
+    );
+  }
 
 // ============================================================
 // COMPLETION VALIDATION
 // ============================================================
 
-String? _validateForCompletion() {
-if (_complaintDateController.text
-    .trim()
-    .isEmpty) {
-return 'Complaint Date is required.';
-}
+  String? _validateForCompletion() {
+    if (_complaintDateController.text
+        .trim()
+        .isEmpty) {
+      return 'Complaint Date is required.';
+    }
 
-if (_customerNameController.text
-    .trim()
-    .isEmpty) {
-return 'Customer is required.';
-}
+    if (_customerNameController.text
+        .trim()
+        .isEmpty) {
+      return 'Customer is required.';
+    }
 
-if (_customerLocationController.text
-    .trim()
-    .isEmpty) {
-return 'Location is required.';
-}
+    if (_customerLocationController.text
+        .trim()
+        .isEmpty) {
+      return 'Location is required.';
+    }
 
-if (_partDescriptionController.text
-    .trim()
-    .isEmpty) {
-return 'Part Description is required.';
-}
+    if (_partDescriptionController.text
+        .trim()
+        .isEmpty) {
+      return 'Part Description is required.';
+    }
 
-if (_partNoController.text
-    .trim()
-    .isEmpty) {
-return 'Part No is required.';
-}
+    if (_partNoController.text
+        .trim()
+        .isEmpty) {
+      return 'Part No is required.';
+    }
 
-if (_qtyController.text
-    .trim()
-    .isEmpty) {
-return 'Qty is required.';
-}
+    if (_qtyController.text
+        .trim()
+        .isEmpty) {
+      return 'Qty is required.';
+    }
 
-if (_toNumber(_qtyController) == null) {
-return 'Qty must be a valid number.';
-}
+    if (_toNumber(_qtyController) == null) {
+      return 'Qty must be a valid number.';
+    }
 
-if (_complaintDescriptionController.text
-    .trim()
-    .isEmpty) {
-return 'Complaint Description is required.';
-}
+    if (_complaintDescriptionController.text
+        .trim()
+        .isEmpty) {
+      return 'Complaint Description is required.';
+    }
 
 // if (_problemDescriptionController.text
 //     .trim()
@@ -1018,880 +786,736 @@ return 'Complaint Description is required.';
 // return 'Problem Description is required.';
 // }
 
-if (_selectedTeamId == null ||
-_selectedTeamId!.trim().isEmpty) {
-return 'Please select a CCR Team before completing Registration.';
-}
+    if (_selectedTeamId == null ||
+        _selectedTeamId!.trim().isEmpty) {
+      return 'Please select a CCR Team before completing Registration.';
+    }
 
-return null;
-}
+    return null;
+  }
 
 // ============================================================
 // CUSTOMER COMPLAINT DOCUMENT
 // ============================================================
 
-Future<void>
-_pickCustomerComplaintDocument() async {
-try {
-final result =
-await FilePicker.platform.pickFiles(
-allowMultiple: false,
-withData: true,
-type: FileType.custom,
-allowedExtensions: [
-'pdf',
-'doc',
-'docx',
-'xls',
-'xlsx',
-'ppt',
-'pptx',
-'txt',
-'jpg',
-'jpeg',
-'png',
-],
-);
+  Future<void>
+  _pickCustomerComplaintDocument() async {
+    try {
+      final result =
+      await FilePicker.platform.pickFiles(
+        allowMultiple: false,
+        withData: true,
+        type: FileType.custom,
+        allowedExtensions: [
+          'pdf',
+          'doc',
+          'docx',
+          'xls',
+          'xlsx',
+          'ppt',
+          'pptx',
+          'txt',
+          'jpg',
+          'jpeg',
+          'png',
+        ],
+      );
 
-if (result == null ||
-result.files.isEmpty) {
-return;
-}
+      if (result == null ||
+          result.files.isEmpty) {
+        return;
+      }
 
-final file = result.files.first;
+      final file = result.files.first;
 
-if (file.bytes == null) {
-throw Exception(
-'Unable to read the selected document.',
-);
-}
+      if (file.bytes == null) {
+        throw Exception(
+          'Unable to read the selected document.',
+        );
+      }
 
-if (!mounted) return;
+      if (!mounted) return;
 
-setState(() {
-_pendingCustomerDocument =
-_PendingDocument(
-bytes: file.bytes!,
-fileName: file.name,
-extension:
-_fileExtension(file.name),
-);
-});
+      setState(() {
+        _pendingCustomerDocument =
+            _PendingDocument(
+              bytes: file.bytes!,
+              fileName: file.name,
+              extension:
+              _fileExtension(file.name),
+            );
+      });
 
-_showMessage(
-'Customer complaint document selected. Save the registration to upload it.',
-);
-} catch (e) {
-if (!mounted) return;
+      _showMessage(
+        'Customer complaint document selected. Save the registration to upload it.',
+      );
+    } catch (e) {
+      if (!mounted) return;
 
-_showMessage(
-_cleanError(e),
-isError: true,
-);
-}
-}
+      _showMessage(
+        _cleanError(e),
+        isError: true,
+      );
+    }
+  }
 
 // ============================================================
 // PHOTO PICKER
 // ============================================================
 
-Future<void> _pickPhoto(
-ImageSource source,
-) async {
-try {
-final image =
-await _imagePicker.pickImage(
-source: source,
-imageQuality: 90,
-);
+  Future<void> _pickPhoto(
+      ImageSource source,
+      ) async {
+    try {
+      final image =
+      await _imagePicker.pickImage(
+        source: source,
+        imageQuality: 90,
+      );
 
-if (image == null) {
-return;
-}
+      if (image == null) {
+        return;
+      }
 
-final bytes =
-await image.readAsBytes();
+      final bytes =
+      await image.readAsBytes();
 
-if (!mounted) return;
+      if (!mounted) return;
 
-setState(() {
-_pendingPhotos.add(
-_PendingPhoto(
-bytes: bytes,
-fileName: image.name,
-),
-);
-});
+      setState(() {
+        _pendingPhotos.add(
+          _PendingPhoto(
+            bytes: bytes,
+            fileName: image.name,
+          ),
+        );
+      });
 
-_showMessage(
-'Photo added. Save the registration to upload it.',
-);
-} catch (e) {
-if (!mounted) return;
+      _showMessage(
+        'Photo added. Save the registration to upload it.',
+      );
+    } catch (e) {
+      if (!mounted) return;
 
-_showMessage(
-_cleanError(e),
-isError: true,
-);
-}
-}
+      _showMessage(
+        _cleanError(e),
+        isError: true,
+      );
+    }
+  }
 
 // ============================================================
 // UPLOAD PHOTOS
 // ============================================================
 
-Future<void> _uploadPendingPhotos() async {
-if (_pendingPhotos.isEmpty) {
-return;
-}
+  Future<void> _uploadPendingPhotos() async {
+    if (_pendingPhotos.isEmpty) return;
 
-for (final photo
-in List<_PendingPhoto>.from(
-_pendingPhotos,
-)) {
-final extension =
-_fileExtension(
-photo.fileName,
-);
+    for (final photo in List<_PendingPhoto>.from(_pendingPhotos)) {
+      await CcrApiClient.uploadFileBytes(
+        path: '/cases/${widget.ccrId}/attachments',
+        bytes: photo.bytes,
+        fileName: photo.fileName,
+        fields: {
+          'attachment_type': 'complaint_photo',
+          'title': photo.fileName,
+          'description': 'Customer complaint registration photo.',
+        },
+      );
+    }
 
-final storagePath =
-'ccr/${widget.ccrId}/registration/'
-'${DateTime.now().millisecondsSinceEpoch}.$extension';
-
-final mimeType =
-_contentType(extension);
-
-await _supabase.storage
-    .from('ccr-files')
-    .uploadBinary(
-storagePath,
-photo.bytes,
-fileOptions: FileOptions(
-upsert: false,
-contentType: mimeType,
-),
-);
-
-await _supabase
-    .from('ccr_attachments')
-    .insert({
-'ccr_id': widget.ccrId,
-'attachment_type':
-'complaint_photo',
-'title': photo.fileName,
-'description':
-'Customer complaint registration photo.',
-'storage_bucket':
-'ccr-files',
-'storage_path':
-storagePath,
-'original_file_name':
-photo.fileName,
-'mime_type': mimeType,
-'file_size':
-photo.bytes.length,
-'uploaded_at':
-DateTime.now()
-    .toIso8601String(),
-'is_deleted': false,
-});
-}
-
-_pendingPhotos.clear();
-}
+    _pendingPhotos.clear();
+  }
 
 // ============================================================
 // FILE HELPERS
 // ============================================================
 
-String _fileExtension(
-String fileName,
-) {
-final dotIndex =
-fileName.lastIndexOf('.');
+  String _fileExtension(
+      String fileName,
+      ) {
+    final dotIndex =
+    fileName.lastIndexOf('.');
 
-if (dotIndex == -1) {
-return 'jpg';
-}
+    if (dotIndex == -1) {
+      return 'jpg';
+    }
 
-final extension =
-fileName.substring(
-dotIndex + 1,
-);
+    final extension =
+    fileName.substring(
+      dotIndex + 1,
+    );
 
-if (extension.isEmpty) {
-return 'jpg';
-}
+    if (extension.isEmpty) {
+      return 'jpg';
+    }
 
-return extension.toLowerCase();
-}
+    return extension.toLowerCase();
+  }
 
-String _contentType(
-String extension,
-) {
-switch (extension.toLowerCase()) {
-case 'png':
-return 'image/png';
+  String _contentType(
+      String extension,
+      ) {
+    switch (extension.toLowerCase()) {
+      case 'png':
+        return 'image/png';
 
-case 'webp':
-return 'image/webp';
+      case 'webp':
+        return 'image/webp';
 
-case 'gif':
-return 'image/gif';
+      case 'gif':
+        return 'image/gif';
 
-case 'jpg':
-case 'jpeg':
-return 'image/jpeg';
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
 
-default:
-return 'application/octet-stream';
-}
-}
+      default:
+        return 'application/octet-stream';
+    }
+  }
 
-String _documentContentType(
-String extension,
-) {
-switch (extension.toLowerCase()) {
-case 'pdf':
-return 'application/pdf';
+  String _documentContentType(
+      String extension,
+      ) {
+    switch (extension.toLowerCase()) {
+      case 'pdf':
+        return 'application/pdf';
 
-case 'doc':
-return 'application/msword';
+      case 'doc':
+        return 'application/msword';
 
-case 'docx':
-return
-'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      case 'docx':
+        return
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
-case 'xls':
-return 'application/vnd.ms-excel';
+      case 'xls':
+        return 'application/vnd.ms-excel';
 
-case 'xlsx':
-return
-'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      case 'xlsx':
+        return
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
-case 'ppt':
-return 'application/vnd.ms-powerpoint';
+      case 'ppt':
+        return 'application/vnd.ms-powerpoint';
 
-case 'pptx':
-return
-'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+      case 'pptx':
+        return
+          'application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
-case 'txt':
-return 'text/plain';
+      case 'txt':
+        return 'text/plain';
 
-case 'png':
-return 'image/png';
+      case 'png':
+        return 'image/png';
 
-case 'jpg':
-case 'jpeg':
-return 'image/jpeg';
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
 
-default:
-return 'application/octet-stream';
-}
-}
+      default:
+        return 'application/octet-stream';
+    }
+  }
 
 // ============================================================
 // UPLOAD CUSTOMER COMPLAINT DOCUMENT
 // ============================================================
 
-Future<void>
-_uploadPendingCustomerDocument() async {
-final document =
-_pendingCustomerDocument;
+  Future<void> _uploadPendingCustomerDocument() async {
+    final document = _pendingCustomerDocument;
+    if (document == null) return;
 
-if (document == null) {
-return;
-}
+    final existingId = _savedCustomerComplaintDocument?['id']?.toString();
+    if (existingId != null && existingId.isNotEmpty) {
+      await CcrApiClient.delete('/attachments/$existingId');
+    }
 
-final existing =
-_savedCustomerComplaintDocument;
+    await CcrApiClient.uploadFileBytes(
+      path: '/cases/${widget.ccrId}/attachments',
+      bytes: document.bytes,
+      fileName: document.fileName,
+      fields: {
+        'attachment_type': 'customer_complaint_document',
+        'title': document.fileName,
+        'description': 'Original customer complaint document.',
+      },
+    );
 
-if (existing != null) {
-final existingId =
-existing['id']?.toString();
-
-if (existingId != null &&
-existingId.isNotEmpty) {
-await _supabase
-    .from('ccr_attachments')
-    .update({
-'is_deleted': true,
-}).eq(
-'id',
-existingId,
-);
-}
-}
-
-final extension =
-document.extension;
-
-final storagePath =
-'ccr/${widget.ccrId}/registration/'
-'customer_complaint/'
-'${DateTime.now().millisecondsSinceEpoch}.$extension';
-
-final mimeType =
-_documentContentType(extension);
-
-await _supabase.storage
-    .from('ccr-files')
-    .uploadBinary(
-storagePath,
-document.bytes,
-fileOptions: FileOptions(
-upsert: false,
-contentType: mimeType,
-),
-);
-
-final inserted =
-await _supabase
-    .from('ccr_attachments')
-    .insert({
-'ccr_id': widget.ccrId,
-'attachment_type':
-'customer_complaint_document',
-'title': document.fileName,
-'description':
-'Original customer complaint document.',
-'storage_bucket':
-'ccr-files',
-'storage_path':
-storagePath,
-'original_file_name':
-document.fileName,
-'mime_type': mimeType,
-'file_size':
-document.bytes.length,
-'uploaded_at':
-DateTime.now()
-    .toIso8601String(),
-'is_deleted': false,
-}).select().single();
-
-_savedCustomerComplaintDocument =
-Map<String, dynamic>.from(
-inserted,
-);
-
-_pendingCustomerDocument = null;
-}
+    _pendingCustomerDocument = null;
+  }
 
 // ============================================================
 // DATE PICKER
 // ============================================================
 
-Future<void> _selectDate(
-TextEditingController controller,
-) async {
-DateTime initialDate =
-DateTime.now();
+  Future<void> _selectDate(
+      TextEditingController controller,
+      ) async {
+    DateTime initialDate =
+    DateTime.now();
 
-final existing =
-DateTime.tryParse(
-controller.text.trim(),
-);
+    final existing =
+    DateTime.tryParse(
+      controller.text.trim(),
+    );
 
-if (existing != null) {
-initialDate = existing;
-}
+    if (existing != null) {
+      initialDate = existing;
+    }
 
-final picked =
-await showDatePicker(
-context: context,
-initialDate: initialDate,
-firstDate: DateTime(2000),
-lastDate: DateTime(2100),
-);
+    final picked =
+    await showDatePicker(
+      context: context,
+      initialDate: initialDate,
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+    );
 
-if (picked == null) {
-return;
-}
+    if (picked == null) {
+      return;
+    }
 
-controller.text =
-_formatDate(picked);
-}
+    controller.text =
+        _formatDate(picked);
+  }
 
-String _formatDate(
-DateTime date,
-) {
-final month =
-date.month
-    .toString()
-    .padLeft(2, '0');
+  String _formatDate(
+      DateTime date,
+      ) {
+    final month =
+    date.month
+        .toString()
+        .padLeft(2, '0');
 
-final day =
-date.day
-    .toString()
-    .padLeft(2, '0');
+    final day =
+    date.day
+        .toString()
+        .padLeft(2, '0');
 
-return '${date.year}-$month-$day';
-}
+    return '${date.year}-$month-$day';
+  }
 
 // ============================================================
 // REFRESH
 // ============================================================
 
-Future<void> _refreshAfterSave() async {
-final dynamic rawCcr =
-await _supabase
-    .from('ccr_cases')
-    .select('''
-              *,
-              ccr_statuses!fk_ccr_cases_status(
-                status_name
-              ),
-              ccr_workflow_stages!fk_ccr_cases_stage(
-                stage_name
-              )
-            ''')
-    .eq(
-'id',
-widget.ccrId,
-)
-    .maybeSingle();
+  Future<void> _refreshAfterSave() async {
+    final dynamic rawCcr = await CcrApiClient.get(
+      '/cases/${widget.ccrId}',
+    );
 
-if (rawCcr == null) {
-return;
-}
+    if (rawCcr is! Map) return;
 
-final ccr =
-Map<String, dynamic>.from(
-rawCcr,
-);
+    final ccr = Map<String, dynamic>.from(rawCcr);
+    _ccr = ccr;
 
-_ccr = ccr;
+    _stageName = _extractNestedName(
+      ccr['ccr_workflow_stages'],
+      'stage_name',
+    );
+    _statusName = _extractNestedName(
+      ccr['ccr_statuses'],
+      'status_name',
+    );
 
-_stageName =
-_extractNestedName(
-ccr['ccr_workflow_stages'],
-'stage_name',
-);
+    _populateCase(ccr);
 
-_statusName =
-_extractNestedName(
-ccr['ccr_statuses'],
-'status_name',
-);
+    final dynamic rawAttachments = await CcrApiClient.get(
+      '/cases/${widget.ccrId}/attachments',
+    );
 
-_populateCase(ccr);
+    _attachments = rawAttachments is List
+        ? rawAttachments.whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row)).toList()
+        : <Map<String, dynamic>>[];
 
-final dynamic rawAttachments =
-await _supabase
-    .from('ccr_attachments')
-    .select()
-    .eq(
-'ccr_id',
-widget.ccrId,
-)
-    .eq(
-'is_deleted',
-false,
-)
-    .order(
-'uploaded_at',
-ascending: false,
-);
+    _savedCustomerComplaintDocument = null;
+    for (final attachment in _attachments) {
+      if (attachment['attachment_type']?.toString() ==
+          'customer_complaint_document') {
+        _savedCustomerComplaintDocument = attachment;
+        break;
+      }
+    }
 
-_attachments =
-List<Map<String, dynamic>>.from(
-rawAttachments,
-);
-
-_savedCustomerComplaintDocument =
-null;
-
-for (final attachment in _attachments) {
-if (attachment['attachment_type']
-    ?.toString() ==
-'customer_complaint_document') {
-_savedCustomerComplaintDocument =
-attachment;
-break;
-}
-}
-
-if (mounted) {
-setState(() {});
-}
-}
+    if (mounted) setState(() {});
+  }
 
 // ============================================================
 // HELPERS
 // ============================================================
 
-String? _nullableText(
-TextEditingController controller,
-) {
-final value =
-controller.text.trim();
+  String? _nullableText(
+      TextEditingController controller,
+      ) {
+    final value =
+    controller.text.trim();
 
-return value.isEmpty
-? null
-    : value;
-}
+    return value.isEmpty
+        ? null
+        : value;
+  }
 
-num? _toNumber(
-TextEditingController controller,
-) {
-final value =
-controller.text.trim();
+  num? _toNumber(
+      TextEditingController controller,
+      ) {
+    final value =
+    controller.text.trim();
 
-if (value.isEmpty) {
-return null;
-}
+    if (value.isEmpty) {
+      return null;
+    }
 
-return num.tryParse(value);
-}
+    return num.tryParse(value);
+  }
 
-int _displayOrder(
-dynamic value,
-) {
-if (value is int) {
-return value;
-}
+  int _displayOrder(
+      dynamic value,
+      ) {
+    if (value is int) {
+      return value;
+    }
 
-if (value is num) {
-return value.toInt();
-}
+    if (value is num) {
+      return value.toInt();
+    }
 
-return int.tryParse(
-value?.toString() ?? '',
-) ??
-0;
-}
+    return int.tryParse(
+      value?.toString() ?? '',
+    ) ??
+        0;
+  }
 
-String _cleanError(
-dynamic error,
-) {
-final text =
-error.toString();
+  String _cleanError(
+      dynamic error,
+      ) {
+    final text =
+    error.toString();
 
-return text
-    .replaceFirst(
-'Exception: ',
-'',
-)
-    .replaceFirst(
-'PostgrestException(message: ',
-'',
-);
-}
+    return text
+        .replaceFirst(
+      'Exception: ',
+      '',
+    )
+        .replaceFirst(
+      'PostgrestException(message: ',
+      '',
+    );
+  }
 
-void _showMessage(
-String message, {
-bool isError = false,
-}) {
-ScaffoldMessenger.of(context)
-    .showSnackBar(
-SnackBar(
-content: Text(message),
-behavior:
-SnackBarBehavior.floating,
-),
-);
-}
+  void _showMessage(
+      String message, {
+        bool isError = false,
+      }) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(
+      SnackBar(
+        content: Text(message),
+        behavior:
+        SnackBarBehavior.floating,
+      ),
+    );
+  }
 
 // ============================================================
 // BUILD
 // ============================================================
 
-@override
-Widget build(
-BuildContext context,
-) {
-return Scaffold(
-backgroundColor:
-const Color(0xFFF5F7FB),
+  @override
+  Widget build(
+      BuildContext context,
+      ) {
+    return Scaffold(
+      backgroundColor:
+      const Color(0xFFF5F7FB),
 
-appBar: AppBar(
-elevation: 0,
-scrolledUnderElevation: 0,
-backgroundColor: Colors.white,
-foregroundColor:
-const Color(0xFF172033),
+      appBar: AppBar(
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        backgroundColor: Colors.white,
+        foregroundColor:
+        const Color(0xFF172033),
 
-title: Row(
-children: [
-Container(
-width: 40,
-height: 40,
-decoration:
-BoxDecoration(
-color:
-const Color(
-0xFFEFF3FF,
-),
-borderRadius:
-BorderRadius.circular(
-11,
-),
-),
-child: const Icon(
-Icons
-    .report_problem_outlined,
-color:
-Color(0xFF3155C6),
-),
-),
+        title: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration:
+              BoxDecoration(
+                color:
+                const Color(
+                  0xFFEFF3FF,
+                ),
+                borderRadius:
+                BorderRadius.circular(
+                  11,
+                ),
+              ),
+              child: const Icon(
+                Icons
+                    .report_problem_outlined,
+                color:
+                Color(0xFF3155C6),
+              ),
+            ),
 
-const SizedBox(width: 12),
+            const SizedBox(width: 12),
 
-Expanded(
-child: Text(
-_ccrDisplayNumber(),
-style:
-const TextStyle(
-fontSize: 19,
-fontWeight:
-FontWeight.w700,
-),
-),
-),
-],
-),
+            Expanded(
+              child: Text(
+                _ccrDisplayNumber(),
+                style:
+                const TextStyle(
+                  fontSize: 19,
+                  fontWeight:
+                  FontWeight.w700,
+                ),
+              ),
+            ),
+          ],
+        ),
 
-actions: [
-IconButton(
-tooltip: 'Refresh',
-onPressed:
-_loading ||
-_saving ||
-_completing
-? null
-    : _loadRegistration,
-icon: const Icon(
-Icons.refresh_rounded,
-),
-),
-const SizedBox(width: 10),
-],
-),
+        actions: [
+          IconButton(
+            tooltip: 'Refresh',
+            onPressed:
+            _loading ||
+                _saving ||
+                _completing
+                ? null
+                : _loadRegistration,
+            icon: const Icon(
+              Icons.refresh_rounded,
+            ),
+          ),
+          const SizedBox(width: 10),
+        ],
+      ),
 
-body: _loading
-? const Center(
-child:
-CircularProgressIndicator(),
-)
-    : _error != null
-? _buildError()
-    : _buildBody(),
-);
-}
+      body: _loading
+          ? const Center(
+        child:
+        CircularProgressIndicator(),
+      )
+          : _error != null
+          ? _buildError()
+          : _buildBody(),
+    );
+  }
 
-String _ccrDisplayNumber() {
-final value =
-_ccr?['ccr_number'];
+  String _ccrDisplayNumber() {
+    final value =
+    _ccr?['ccr_number'];
 
-if (value == null) {
-return 'Customer Complaint Registration';
-}
+    if (value == null) {
+      return 'Customer Complaint Registration';
+    }
 
-final number =
-int.tryParse(
-value.toString(),
-) ??
-0;
+    final number =
+        int.tryParse(
+          value.toString(),
+        ) ??
+            0;
 
-if (number <= 0) {
-return 'Customer Complaint Registration';
-}
+    if (number <= 0) {
+      return 'Customer Complaint Registration';
+    }
 
-return 'CCR-${number.toString().padLeft(6, '0')}';
-}
+    return 'CCR-${number.toString().padLeft(6, '0')}';
+  }
 
 // ============================================================
 // ERROR
 // ============================================================
 
-Widget _buildError() {
-return Center(
-child: _surfaceCard(
-child: Padding(
-padding:
-const EdgeInsets.all(40),
-child: Column(
-mainAxisSize:
-MainAxisSize.min,
-children: [
-const Icon(
-Icons
-    .error_outline_rounded,
-size: 46,
-color:
-Color(0xFFD94A4A),
-),
+  Widget _buildError() {
+    return Center(
+      child: _surfaceCard(
+        child: Padding(
+          padding:
+          const EdgeInsets.all(40),
+          child: Column(
+            mainAxisSize:
+            MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons
+                    .error_outline_rounded,
+                size: 46,
+                color:
+                Color(0xFFD94A4A),
+              ),
 
-const SizedBox(height: 14),
+              const SizedBox(height: 14),
 
-const Text(
-'Unable to load complaint',
-style: TextStyle(
-fontSize: 17,
-fontWeight:
-FontWeight.w700,
-),
-),
+              const Text(
+                'Unable to load complaint',
+                style: TextStyle(
+                  fontSize: 17,
+                  fontWeight:
+                  FontWeight.w700,
+                ),
+              ),
 
-const SizedBox(height: 8),
+              const SizedBox(height: 8),
 
-Text(
-_error ?? '',
-textAlign:
-TextAlign.center,
-style:
-const TextStyle(
-color:
-Color(0xFF6B7280),
-),
-),
+              Text(
+                _error ?? '',
+                textAlign:
+                TextAlign.center,
+                style:
+                const TextStyle(
+                  color:
+                  Color(0xFF6B7280),
+                ),
+              ),
 
-const SizedBox(height: 18),
+              const SizedBox(height: 18),
 
-OutlinedButton.icon(
-onPressed:
-_loadRegistration,
-icon: const Icon(
-Icons.refresh_rounded,
-),
-label:
-const Text('Retry'),
-),
-],
-),
-),
-),
-);
-}
+              OutlinedButton.icon(
+                onPressed:
+                _loadRegistration,
+                icon: const Icon(
+                  Icons.refresh_rounded,
+                ),
+                label:
+                const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
 // ============================================================
 // BODY
 // ============================================================
 
-Widget _buildBody() {
-return Column(
-children: [
-_buildStageHeader(),
+  Widget _buildBody() {
+    return Column(
+      children: [
+        _buildStageHeader(),
 
-Expanded(
-child:
-SingleChildScrollView(
-padding:
-const EdgeInsets.fromLTRB(
-24,
-22,
-24,
-130,
-),
-child: Center(
-child: ConstrainedBox(
-constraints:
-const BoxConstraints(
-maxWidth: 1200,
-),
-child: Column(
-children: [
-_buildRegistrationInformation(),
+        Expanded(
+          child:
+          SingleChildScrollView(
+            padding:
+            const EdgeInsets.fromLTRB(
+              24,
+              22,
+              24,
+              130,
+            ),
+            child: Center(
+              child: ConstrainedBox(
+                constraints:
+                const BoxConstraints(
+                  maxWidth: 1200,
+                ),
+                child: Column(
+                  children: [
+                    _buildRegistrationInformation(),
 
-const SizedBox(
-height: 18,
-),
+                    const SizedBox(
+                      height: 18,
+                    ),
 
-_buildTeamSection(),
+                    _buildTeamSection(),
 
-const SizedBox(
-height: 18,
-),
+                    const SizedBox(
+                      height: 18,
+                    ),
 
-_buildCustomerComplaintDocument(),
+                    _buildCustomerComplaintDocument(),
 
-const SizedBox(
-height: 18,
-),
+                    const SizedBox(
+                      height: 18,
+                    ),
 
-_buildPhotos(),
-],
-),
-),
-),
-),
-),
+                    _buildPhotos(),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
 
-_buildBottomBar(),
-],
-);
-}
+        _buildBottomBar(),
+      ],
+    );
+  }
 
 // ============================================================
 // STAGE HEADER
 // ============================================================
 
-Widget _buildStageHeader() {
-return Container(
-width: double.infinity,
-color: Colors.white,
-padding:
-const EdgeInsets.symmetric(
-horizontal: 28,
-vertical: 16,
-),
-child: Center(
-child: ConstrainedBox(
-constraints:
-const BoxConstraints(
-maxWidth: 1200,
-),
-child: Row(
-children: [
-const Icon(
-Icons.assignment_outlined,
-color:
-Color(0xFF3155C6),
-),
+  Widget _buildStageHeader() {
+    return Container(
+      width: double.infinity,
+      color: Colors.white,
+      padding:
+      const EdgeInsets.symmetric(
+        horizontal: 28,
+        vertical: 16,
+      ),
+      child: Center(
+        child: ConstrainedBox(
+          constraints:
+          const BoxConstraints(
+            maxWidth: 1200,
+          ),
+          child: Row(
+            children: [
+              const Icon(
+                Icons.assignment_outlined,
+                color:
+                Color(0xFF3155C6),
+              ),
 
-const SizedBox(width: 10),
+              const SizedBox(width: 10),
 
-const Expanded(
-child: Column(
-crossAxisAlignment:
-CrossAxisAlignment.start,
-children: [
-Text(
-'Registration',
-style: TextStyle(
-fontSize: 17,
-fontWeight:
-FontWeight.w800,
-),
-),
-SizedBox(height: 3),
-Text(
-'Register the customer complaint and required traceability information.',
-style: TextStyle(
-fontSize: 12,
-color:
-Color(0xFF6B7280),
-),
-),
-],
-),
-),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment:
+                  CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Registration',
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight:
+                        FontWeight.w800,
+                      ),
+                    ),
+                    SizedBox(height: 3),
+                    Text(
+                      'Register the customer complaint and required traceability information.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color:
+                        Color(0xFF6B7280),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
 
-if (_stageName != null)
-_chip(_stageName!),
+              if (_stageName != null)
+                _chip(_stageName!),
 
-const SizedBox(width: 8),
+              const SizedBox(width: 8),
 
-if (_statusName != null)
-_chip(_statusName!),
-],
-),
-),
-),
-);
-}
+              if (_statusName != null)
+                _chip(_statusName!),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
 // ============================================================
 // REGISTRATION INFORMATION
@@ -1951,1234 +1575,1234 @@ _chip(_statusName!),
 // TEAM SECTION
 // ============================================================
 
-Widget _buildTeamSection() {
-return _sectionCard(
-icon:
-Icons.groups_outlined,
-title: 'CCR Team and Members',
-subtitle:
-'Select the configured CCR team and review its members.',
-child: _teamSelectionField().widget,
-);
-}
+  Widget _buildTeamSection() {
+    return _sectionCard(
+      icon:
+      Icons.groups_outlined,
+      title: 'CCR Team and Members',
+      subtitle:
+      'Select the configured CCR team and review its members.',
+      child: _teamSelectionField().widget,
+    );
+  }
 
-_FieldItem _teamSelectionField() {
-return _FieldItem(
-fullWidth: true,
-widget: Column(
-crossAxisAlignment:
-CrossAxisAlignment.start,
-children: [
-DropdownButtonFormField<String>(
-value: _availableTeams.any(
-(team) =>
-team['id']?.toString() ==
-_selectedTeamId,
-)
-? _selectedTeamId
-    : null,
-isExpanded: true,
-decoration:
-_inputDecoration(
-'CCR Team',
-).copyWith(
-prefixIcon: const Icon(
-Icons.groups_outlined,
-),
-),
-hint: const Text(
-'Select Team Leader',
-),
-items: _availableTeams
-    .map<DropdownMenuItem<String>?>(
-(team) {
-final id =
-team['id']?.toString();
+  _FieldItem _teamSelectionField() {
+    return _FieldItem(
+      fullWidth: true,
+      widget: Column(
+        crossAxisAlignment:
+        CrossAxisAlignment.start,
+        children: [
+          DropdownButtonFormField<String>(
+            value: _availableTeams.any(
+                  (team) =>
+              team['id']?.toString() ==
+                  _selectedTeamId,
+            )
+                ? _selectedTeamId
+                : null,
+            isExpanded: true,
+            decoration:
+            _inputDecoration(
+              'CCR Team',
+            ).copyWith(
+              prefixIcon: const Icon(
+                Icons.groups_outlined,
+              ),
+            ),
+            hint: const Text(
+              'Select Team Leader',
+            ),
+            items: _availableTeams
+                .map<DropdownMenuItem<String>?>(
+                  (team) {
+                final id =
+                team['id']?.toString();
 
-final leader =
-team['team_leader_name']
-    ?.toString()
-    .trim();
+                final leader =
+                team['team_leader_name']
+                    ?.toString()
+                    .trim();
 
-if (id == null ||
-id.isEmpty ||
-leader == null ||
-leader.isEmpty) {
-return null;
-}
+                if (id == null ||
+                    id.isEmpty ||
+                    leader == null ||
+                    leader.isEmpty) {
+                  return null;
+                }
 
-return DropdownMenuItem<String>(
-value: id,
-child: Text(
-leader,
-overflow:
-TextOverflow.ellipsis,
-),
-);
-},
-)
-    .whereType<
-DropdownMenuItem<String>>()
-    .toList(),
-onChanged:
-_availableTeams.isEmpty ||
-_loadingTeams
-? null
-    : (value) {
-_selectTeamById(
-value,
-);
-},
-),
+                return DropdownMenuItem<String>(
+                  value: id,
+                  child: Text(
+                    leader,
+                    overflow:
+                    TextOverflow.ellipsis,
+                  ),
+                );
+              },
+            )
+                .whereType<
+                DropdownMenuItem<String>>()
+                .toList(),
+            onChanged:
+            _availableTeams.isEmpty ||
+                _loadingTeams
+                ? null
+                : (value) {
+              _selectTeamById(
+                value,
+              );
+            },
+          ),
 
-const SizedBox(height: 12),
+          const SizedBox(height: 12),
 
-if (_loadingTeams)
-const Row(
-children: [
-SizedBox(
-width: 16,
-height: 16,
-child:
-CircularProgressIndicator(
-strokeWidth: 2,
-),
-),
-SizedBox(width: 8),
-Text(
-'Loading CCR teams...',
-style: TextStyle(
-fontSize: 12,
-color:
-Color(0xFF6B7280),
-),
-),
-],
-),
+          if (_loadingTeams)
+            const Row(
+              children: [
+                SizedBox(
+                  width: 16,
+                  height: 16,
+                  child:
+                  CircularProgressIndicator(
+                    strokeWidth: 2,
+                  ),
+                ),
+                SizedBox(width: 8),
+                Text(
+                  'Loading CCR teams...',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color:
+                    Color(0xFF6B7280),
+                  ),
+                ),
+              ],
+            ),
 
-if (!_loadingTeams &&
-_availableTeams.isEmpty)
-Container(
-width: double.infinity,
-padding:
-const EdgeInsets.all(
-12,
-),
-decoration:
-BoxDecoration(
-color:
-const Color(0xFFFFF7ED),
-borderRadius:
-BorderRadius.circular(
-10,
-),
-border: Border.all(
-color:
-const Color(0xFFF5C28B),
-),
-),
-child: const Row(
-crossAxisAlignment:
-CrossAxisAlignment.start,
-children: [
-Icon(
-Icons
-    .warning_amber_rounded,
-size: 20,
-color:
-Color(0xFFC77700),
-),
-SizedBox(width: 9),
-Expanded(
-child: Text(
-'No active CCR teams are configured. Create a team from CCR Team Management before completing Registration.',
-style: TextStyle(
-fontSize: 12,
-color:
-Color(0xFF7A4B00),
-),
-),
-),
-],
-),
-),
+          if (!_loadingTeams &&
+              _availableTeams.isEmpty)
+            Container(
+              width: double.infinity,
+              padding:
+              const EdgeInsets.all(
+                12,
+              ),
+              decoration:
+              BoxDecoration(
+                color:
+                const Color(0xFFFFF7ED),
+                borderRadius:
+                BorderRadius.circular(
+                  10,
+                ),
+                border: Border.all(
+                  color:
+                  const Color(0xFFF5C28B),
+                ),
+              ),
+              child: const Row(
+                crossAxisAlignment:
+                CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    Icons
+                        .warning_amber_rounded,
+                    size: 20,
+                    color:
+                    Color(0xFFC77700),
+                  ),
+                  SizedBox(width: 9),
+                  Expanded(
+                    child: Text(
+                      'No active CCR teams are configured. Create a team from CCR Team Management before completing Registration.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color:
+                        Color(0xFF7A4B00),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
 
-if (_selectedTeamId != null &&
-!_loadingTeams)
-Container(
-width: double.infinity,
-margin:
-const EdgeInsets.only(
-top: 4,
-),
-padding:
-const EdgeInsets.all(
-14,
-),
-decoration:
-BoxDecoration(
-color:
-const Color(0xFFF8F9FB),
-borderRadius:
-BorderRadius.circular(
-10,
-),
-border: Border.all(
-color:
-const Color(0xFFE2E3E7),
-),
-),
-child: Column(
-crossAxisAlignment:
-CrossAxisAlignment.start,
-children: [
-Row(
-children: [
-const Icon(
-Icons.person_outline,
-size: 18,
-color:
-Color(0xFF3155C6),
-),
-const SizedBox(width: 7),
-const Text(
-'Team Leader',
-style: TextStyle(
-fontSize: 12,
-fontWeight:
-FontWeight.w700,
-color:
-Color(0xFF555A63),
-),
-),
-],
-),
+          if (_selectedTeamId != null &&
+              !_loadingTeams)
+            Container(
+              width: double.infinity,
+              margin:
+              const EdgeInsets.only(
+                top: 4,
+              ),
+              padding:
+              const EdgeInsets.all(
+                14,
+              ),
+              decoration:
+              BoxDecoration(
+                color:
+                const Color(0xFFF8F9FB),
+                borderRadius:
+                BorderRadius.circular(
+                  10,
+                ),
+                border: Border.all(
+                  color:
+                  const Color(0xFFE2E3E7),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment:
+                CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.person_outline,
+                        size: 18,
+                        color:
+                        Color(0xFF3155C6),
+                      ),
+                      const SizedBox(width: 7),
+                      const Text(
+                        'Team Leader',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight:
+                          FontWeight.w700,
+                          color:
+                          Color(0xFF555A63),
+                        ),
+                      ),
+                    ],
+                  ),
 
-const SizedBox(height: 5),
+                  const SizedBox(height: 5),
 
-Text(
-_selectedTeamLeaderName ??
-'-',
-style:
-const TextStyle(
-fontSize: 14,
-fontWeight:
-FontWeight.w700,
-color:
-Color(0xFF202124),
-),
-),
+                  Text(
+                    _selectedTeamLeaderName ??
+                        '-',
+                    style:
+                    const TextStyle(
+                      fontSize: 14,
+                      fontWeight:
+                      FontWeight.w700,
+                      color:
+                      Color(0xFF202124),
+                    ),
+                  ),
 
-const SizedBox(height: 14),
+                  const SizedBox(height: 14),
 
-const Text(
-'Team Members',
-style: TextStyle(
-fontSize: 12,
-fontWeight:
-FontWeight.w700,
-color:
-Color(0xFF555A63),
-),
-),
+                  const Text(
+                    'Team Members',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight:
+                      FontWeight.w700,
+                      color:
+                      Color(0xFF555A63),
+                    ),
+                  ),
 
-const SizedBox(height: 8),
+                  const SizedBox(height: 8),
 
-if (_selectedTeamMembers
-    .isEmpty)
-const Text(
-'No members configured.',
-style: TextStyle(
-fontSize: 12,
-color:
-Color(0xFF6B7280),
-),
-)
-else
-Wrap(
-spacing: 8,
-runSpacing: 8,
-children:
-_selectedTeamMembers
-    .map(
-(member) {
-return Chip(
-avatar:
-const Icon(
-Icons
-    .person_outline,
-size: 15,
-),
-label:
-Text(member),
-);
-},
-).toList(),
-),
-],
-),
-),
-],
-),
-);
-}
+                  if (_selectedTeamMembers
+                      .isEmpty)
+                    const Text(
+                      'No members configured.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color:
+                        Color(0xFF6B7280),
+                      ),
+                    )
+                  else
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children:
+                      _selectedTeamMembers
+                          .map(
+                            (member) {
+                          return Chip(
+                            avatar:
+                            const Icon(
+                              Icons
+                                  .person_outline,
+                              size: 15,
+                            ),
+                            label:
+                            Text(member),
+                          );
+                        },
+                      ).toList(),
+                    ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 
 // ============================================================
 // CUSTOMER COMPLAINT DOCUMENT
 // ============================================================
 
-Widget _buildCustomerComplaintDocument() {
-final saved =
-_savedCustomerComplaintDocument;
+  Widget _buildCustomerComplaintDocument() {
+    final saved =
+        _savedCustomerComplaintDocument;
 
-final pending =
-_pendingCustomerDocument;
+    final pending =
+        _pendingCustomerDocument;
 
-return _sectionCard(
-icon:
-Icons.description_outlined,
-title:
-'Original Customer Complaint Document',
-subtitle:
-'Upload the original complaint document received from the customer.',
-child: Column(
-crossAxisAlignment:
-CrossAxisAlignment.start,
-children: [
-FilledButton.icon(
-onPressed:
-_saving ||
-_completing
-? null
-    : _pickCustomerComplaintDocument,
-icon: const Icon(
-Icons.upload_file_outlined,
-),
-label:
-const Text(
-'Select Document',
-),
-),
+    return _sectionCard(
+      icon:
+      Icons.description_outlined,
+      title:
+      'Original Customer Complaint Document',
+      subtitle:
+      'Upload the original complaint document received from the customer.',
+      child: Column(
+        crossAxisAlignment:
+        CrossAxisAlignment.start,
+        children: [
+          FilledButton.icon(
+            onPressed:
+            _saving ||
+                _completing
+                ? null
+                : _pickCustomerComplaintDocument,
+            icon: const Icon(
+              Icons.upload_file_outlined,
+            ),
+            label:
+            const Text(
+              'Select Document',
+            ),
+          ),
 
-const SizedBox(height: 14),
+          const SizedBox(height: 14),
 
-if (pending != null)
-Container(
-width: double.infinity,
-padding:
-const EdgeInsets.all(
-14,
-),
-decoration:
-BoxDecoration(
-color:
-const Color(0xFFEFF3FF),
-borderRadius:
-BorderRadius.circular(
-10,
-),
-border: Border.all(
-color:
-const Color(0xFFBFCBF5),
-),
-),
-child: Row(
-children: [
-const Icon(
-Icons
-    .insert_drive_file_outlined,
-color:
-Color(0xFF3155C6),
-),
-const SizedBox(width: 10),
-Expanded(
-child: Text(
-pending.fileName,
-maxLines: 2,
-overflow:
-TextOverflow.ellipsis,
-style:
-const TextStyle(
-fontSize: 13,
-fontWeight:
-FontWeight.w700,
-),
-),
-),
-IconButton(
-tooltip:
-'Remove selected document',
-onPressed:
-_saving ||
-_completing
-? null
-    : () {
-setState(() {
-_pendingCustomerDocument =
-null;
-});
-},
-icon:
-const Icon(
-Icons.close,
-),
-),
-],
-),
-),
+          if (pending != null)
+            Container(
+              width: double.infinity,
+              padding:
+              const EdgeInsets.all(
+                14,
+              ),
+              decoration:
+              BoxDecoration(
+                color:
+                const Color(0xFFEFF3FF),
+                borderRadius:
+                BorderRadius.circular(
+                  10,
+                ),
+                border: Border.all(
+                  color:
+                  const Color(0xFFBFCBF5),
+                ),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons
+                        .insert_drive_file_outlined,
+                    color:
+                    Color(0xFF3155C6),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      pending.fileName,
+                      maxLines: 2,
+                      overflow:
+                      TextOverflow.ellipsis,
+                      style:
+                      const TextStyle(
+                        fontSize: 13,
+                        fontWeight:
+                        FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip:
+                    'Remove selected document',
+                    onPressed:
+                    _saving ||
+                        _completing
+                        ? null
+                        : () {
+                      setState(() {
+                        _pendingCustomerDocument =
+                        null;
+                      });
+                    },
+                    icon:
+                    const Icon(
+                      Icons.close,
+                    ),
+                  ),
+                ],
+              ),
+            ),
 
-if (pending != null &&
-saved != null)
-const SizedBox(height: 10),
+          if (pending != null &&
+              saved != null)
+            const SizedBox(height: 10),
 
-if (saved != null)
-Container(
-width: double.infinity,
-padding:
-const EdgeInsets.all(
-14,
-),
-decoration:
-BoxDecoration(
-color:
-const Color(0xFFF8F9FB),
-borderRadius:
-BorderRadius.circular(
-10,
-),
-border: Border.all(
-color:
-const Color(0xFFE2E3E7),
-),
-),
-child: Row(
-children: [
-const Icon(
-Icons
-    .description_outlined,
-color:
-Color(0xFF3155C6),
-),
-const SizedBox(width: 10),
-Expanded(
-child: Text(
-saved[
-'original_file_name']
-    ?.toString() ??
-saved['title']
-    ?.toString() ??
-'Customer complaint document',
-maxLines: 2,
-overflow:
-TextOverflow.ellipsis,
-style:
-const TextStyle(
-fontSize: 13,
-fontWeight:
-FontWeight.w700,
-),
-),
-),
-const Icon(
-Icons
-    .check_circle_outline,
-color:
-Color(0xFF2E9B55),
-),
-],
-),
-),
+          if (saved != null)
+            Container(
+              width: double.infinity,
+              padding:
+              const EdgeInsets.all(
+                14,
+              ),
+              decoration:
+              BoxDecoration(
+                color:
+                const Color(0xFFF8F9FB),
+                borderRadius:
+                BorderRadius.circular(
+                  10,
+                ),
+                border: Border.all(
+                  color:
+                  const Color(0xFFE2E3E7),
+                ),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons
+                        .description_outlined,
+                    color:
+                    Color(0xFF3155C6),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      saved[
+                      'original_file_name']
+                          ?.toString() ??
+                          saved['title']
+                              ?.toString() ??
+                          'Customer complaint document',
+                      maxLines: 2,
+                      overflow:
+                      TextOverflow.ellipsis,
+                      style:
+                      const TextStyle(
+                        fontSize: 13,
+                        fontWeight:
+                        FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  const Icon(
+                    Icons
+                        .check_circle_outline,
+                    color:
+                    Color(0xFF2E9B55),
+                  ),
+                ],
+              ),
+            ),
 
-if (saved == null &&
-pending == null)
-Container(
-width: double.infinity,
-padding:
-const EdgeInsets.all(
-22,
-),
-decoration:
-BoxDecoration(
-color:
-const Color(0xFFF8F9FB),
-borderRadius:
-BorderRadius.circular(
-10,
-),
-border: Border.all(
-color:
-const Color(0xFFE2E3E7),
-),
-),
-child: const Column(
-children: [
-Icon(
-Icons
-    .description_outlined,
-size: 32,
-color:
-Color(0xFF9AA0A6),
-),
-SizedBox(height: 8),
-Text(
-'No customer complaint document attached',
-textAlign:
-TextAlign.center,
-style: TextStyle(
-fontSize: 12,
-color:
-Color(0xFF6B7280),
-),
-),
-],
-),
-),
+          if (saved == null &&
+              pending == null)
+            Container(
+              width: double.infinity,
+              padding:
+              const EdgeInsets.all(
+                22,
+              ),
+              decoration:
+              BoxDecoration(
+                color:
+                const Color(0xFFF8F9FB),
+                borderRadius:
+                BorderRadius.circular(
+                  10,
+                ),
+                border: Border.all(
+                  color:
+                  const Color(0xFFE2E3E7),
+                ),
+              ),
+              child: const Column(
+                children: [
+                  Icon(
+                    Icons
+                        .description_outlined,
+                    size: 32,
+                    color:
+                    Color(0xFF9AA0A6),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    'No customer complaint document attached',
+                    textAlign:
+                    TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color:
+                      Color(0xFF6B7280),
+                    ),
+                  ),
+                ],
+              ),
+            ),
 
-const SizedBox(height: 10),
+          const SizedBox(height: 10),
 
-const Text(
-'Supported formats: PDF, Word, Excel, PowerPoint, TXT and common image formats.',
-style: TextStyle(
-fontSize: 11,
-color:
-Color(0xFF6B7280),
-),
-),
-],
-),
-);
-}
+          const Text(
+            'Supported formats: PDF, Word, Excel, PowerPoint, TXT and common image formats.',
+            style: TextStyle(
+              fontSize: 11,
+              color:
+              Color(0xFF6B7280),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
 // ============================================================
 // PHOTOS
 // ============================================================
 
-Widget _buildPhotos() {
-final savedPhotos =
-_attachments.where(
-(attachment) =>
-attachment['attachment_type']
-    ?.toString() ==
-'complaint_photo',
-).toList();
+  Widget _buildPhotos() {
+    final savedPhotos =
+    _attachments.where(
+          (attachment) =>
+      attachment['attachment_type']
+          ?.toString() ==
+          'complaint_photo',
+    ).toList();
 
-return _sectionCard(
-icon:
-Icons.photo_library_outlined,
-title: 'Defect Photograph',
-subtitle:
-'Attach photographs related to the customer complaint.',
-child: Column(
-crossAxisAlignment:
-CrossAxisAlignment.start,
-children: [
-Row(
-children: [
-FilledButton.icon(
-onPressed:
-_saving ||
-_completing
-? null
-    : () =>
-_pickPhoto(
-ImageSource
-    .gallery,
-),
-icon: const Icon(
-Icons.photo_outlined,
-),
-label:
-const Text(
-'Gallery',
-),
-),
+    return _sectionCard(
+      icon:
+      Icons.photo_library_outlined,
+      title: 'Defect Photograph',
+      subtitle:
+      'Attach photographs related to the customer complaint.',
+      child: Column(
+        crossAxisAlignment:
+        CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              FilledButton.icon(
+                onPressed:
+                _saving ||
+                    _completing
+                    ? null
+                    : () =>
+                    _pickPhoto(
+                      ImageSource
+                          .gallery,
+                    ),
+                icon: const Icon(
+                  Icons.photo_outlined,
+                ),
+                label:
+                const Text(
+                  'Gallery',
+                ),
+              ),
 
-const SizedBox(width: 10),
+              const SizedBox(width: 10),
 
-OutlinedButton.icon(
-onPressed:
-_saving ||
-_completing
-? null
-    : () =>
-_pickPhoto(
-ImageSource
-    .camera,
-),
-icon: const Icon(
-Icons.camera_alt_outlined,
-),
-label:
-const Text(
-'Camera',
-),
-),
-],
-),
+              OutlinedButton.icon(
+                onPressed:
+                _saving ||
+                    _completing
+                    ? null
+                    : () =>
+                    _pickPhoto(
+                      ImageSource
+                          .camera,
+                    ),
+                icon: const Icon(
+                  Icons.camera_alt_outlined,
+                ),
+                label:
+                const Text(
+                  'Camera',
+                ),
+              ),
+            ],
+          ),
 
-const SizedBox(height: 16),
+          const SizedBox(height: 16),
 
-if (_pendingPhotos.isNotEmpty)
-_buildPendingPhotos(),
+          if (_pendingPhotos.isNotEmpty)
+            _buildPendingPhotos(),
 
-if (savedPhotos.isNotEmpty)
-_buildSavedAttachments(
-savedPhotos,
-),
+          if (savedPhotos.isNotEmpty)
+            _buildSavedAttachments(
+              savedPhotos,
+            ),
 
-if (_pendingPhotos.isEmpty &&
-savedPhotos.isEmpty)
-Container(
-width: double.infinity,
-padding:
-const EdgeInsets.all(
-25,
-),
-decoration:
-BoxDecoration(
-color:
-const Color(0xFFF8F9FB),
-borderRadius:
-BorderRadius.circular(
-12,
-),
-border: Border.all(
-color:
-const Color(0xFFE2E3E7),
-),
-),
-child: const Column(
-children: [
-Icon(
-Icons
-    .image_not_supported_outlined,
-size: 34,
-color:
-Color(0xFF9AA0A6),
-),
-SizedBox(height: 8),
-Text(
-'No defect photographs attached',
-style:
-TextStyle(
-fontSize: 13,
-color:
-Color(0xFF6B7280),
-),
-),
-],
-),
-),
-],
-),
-);
-}
+          if (_pendingPhotos.isEmpty &&
+              savedPhotos.isEmpty)
+            Container(
+              width: double.infinity,
+              padding:
+              const EdgeInsets.all(
+                25,
+              ),
+              decoration:
+              BoxDecoration(
+                color:
+                const Color(0xFFF8F9FB),
+                borderRadius:
+                BorderRadius.circular(
+                  12,
+                ),
+                border: Border.all(
+                  color:
+                  const Color(0xFFE2E3E7),
+                ),
+              ),
+              child: const Column(
+                children: [
+                  Icon(
+                    Icons
+                        .image_not_supported_outlined,
+                    size: 34,
+                    color:
+                    Color(0xFF9AA0A6),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    'No defect photographs attached',
+                    style:
+                    TextStyle(
+                      fontSize: 13,
+                      color:
+                      Color(0xFF6B7280),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 
-Widget _buildPendingPhotos() {
-return Wrap(
-spacing: 12,
-runSpacing: 12,
-children:
-List.generate(
-_pendingPhotos.length,
-(index) {
-final photo =
-_pendingPhotos[index];
+  Widget _buildPendingPhotos() {
+    return Wrap(
+      spacing: 12,
+      runSpacing: 12,
+      children:
+      List.generate(
+        _pendingPhotos.length,
+            (index) {
+          final photo =
+          _pendingPhotos[index];
 
-return Stack(
-children: [
-ClipRRect(
-borderRadius:
-BorderRadius.circular(
-12,
-),
-child: Image.memory(
-photo.bytes,
-width: 150,
-height: 110,
-fit: BoxFit.cover,
-),
-),
+          return Stack(
+            children: [
+              ClipRRect(
+                borderRadius:
+                BorderRadius.circular(
+                  12,
+                ),
+                child: Image.memory(
+                  photo.bytes,
+                  width: 150,
+                  height: 110,
+                  fit: BoxFit.cover,
+                ),
+              ),
 
-Positioned(
-right: 5,
-top: 5,
-child: InkWell(
-onTap: () {
-setState(() {
-_pendingPhotos
-    .removeAt(index);
-});
-},
-child: Container(
-width: 28,
-height: 28,
-decoration:
-const BoxDecoration(
-color: Colors.black54,
-shape:
-BoxShape.circle,
-),
-child:
-const Icon(
-Icons.close,
-size: 17,
-color:
-Colors.white,
-),
-),
-),
-),
-],
-);
-},
-),
-);
-}
+              Positioned(
+                right: 5,
+                top: 5,
+                child: InkWell(
+                  onTap: () {
+                    setState(() {
+                      _pendingPhotos
+                          .removeAt(index);
+                    });
+                  },
+                  child: Container(
+                    width: 28,
+                    height: 28,
+                    decoration:
+                    const BoxDecoration(
+                      color: Colors.black54,
+                      shape:
+                      BoxShape.circle,
+                    ),
+                    child:
+                    const Icon(
+                      Icons.close,
+                      size: 17,
+                      color:
+                      Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
 
-Widget _buildSavedAttachments(
-List<Map<String, dynamic>>
-savedPhotos,
-) {
-return Column(
-crossAxisAlignment:
-CrossAxisAlignment.start,
-children: [
-if (_pendingPhotos.isNotEmpty)
-const SizedBox(height: 18),
+  Widget _buildSavedAttachments(
+      List<Map<String, dynamic>>
+      savedPhotos,
+      ) {
+    return Column(
+      crossAxisAlignment:
+      CrossAxisAlignment.start,
+      children: [
+        if (_pendingPhotos.isNotEmpty)
+          const SizedBox(height: 18),
 
-const Text(
-'Saved Photos',
-style: TextStyle(
-fontSize: 13,
-fontWeight:
-FontWeight.w700,
-color:
-Color(0xFF202124),
-),
-),
+        const Text(
+          'Saved Photos',
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight:
+            FontWeight.w700,
+            color:
+            Color(0xFF202124),
+          ),
+        ),
 
-const SizedBox(height: 10),
+        const SizedBox(height: 10),
 
-...savedPhotos.map(
-(attachment) {
-final name =
-attachment[
-'original_file_name']
-    ?.toString() ??
-attachment['title']
-    ?.toString() ??
-'Attachment';
+        ...savedPhotos.map(
+              (attachment) {
+            final name =
+                attachment[
+                'original_file_name']
+                    ?.toString() ??
+                    attachment['title']
+                        ?.toString() ??
+                    'Attachment';
 
-return Container(
-margin:
-const EdgeInsets.only(
-bottom: 8,
-),
-padding:
-const EdgeInsets.all(
-12,
-),
-decoration:
-BoxDecoration(
-color:
-const Color(0xFFF8F9FB),
-borderRadius:
-BorderRadius.circular(
-10,
-),
-border: Border.all(
-color:
-const Color(0xFFE2E3E7),
-),
-),
-child: Row(
-children: [
-const Icon(
-Icons.image_outlined,
-size: 20,
-color:
-Color(0xFF3155C6),
-),
-const SizedBox(width: 10),
-Expanded(
-child: Text(
-name,
-overflow:
-TextOverflow.ellipsis,
-style:
-const TextStyle(
-fontSize: 12,
-fontWeight:
-FontWeight.w600,
-),
-),
-),
-const Icon(
-Icons
-    .check_circle_outline,
-size: 18,
-color:
-Color(0xFF2E9B55),
-),
-],
-),
-);
-},
-),
-],
-);
-}
+            return Container(
+              margin:
+              const EdgeInsets.only(
+                bottom: 8,
+              ),
+              padding:
+              const EdgeInsets.all(
+                12,
+              ),
+              decoration:
+              BoxDecoration(
+                color:
+                const Color(0xFFF8F9FB),
+                borderRadius:
+                BorderRadius.circular(
+                  10,
+                ),
+                border: Border.all(
+                  color:
+                  const Color(0xFFE2E3E7),
+                ),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.image_outlined,
+                    size: 20,
+                    color:
+                    Color(0xFF3155C6),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      name,
+                      overflow:
+                      TextOverflow.ellipsis,
+                      style:
+                      const TextStyle(
+                        fontSize: 12,
+                        fontWeight:
+                        FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  const Icon(
+                    Icons
+                        .check_circle_outline,
+                    size: 18,
+                    color:
+                    Color(0xFF2E9B55),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ],
+    );
+  }
 
 // ============================================================
 // RESPONSIVE GRID
 // ============================================================
 
-Widget _responsiveFields(
-List<_FieldItem> fields,
-) {
-return LayoutBuilder(
-builder:
-(context, constraints) {
-final twoColumns =
-constraints.maxWidth >= 850;
+  Widget _responsiveFields(
+      List<_FieldItem> fields,
+      ) {
+    return LayoutBuilder(
+      builder:
+          (context, constraints) {
+        final twoColumns =
+            constraints.maxWidth >= 850;
 
-final children =
-<Widget>[];
+        final children =
+        <Widget>[];
 
-for (final field in fields) {
-if (field.fullWidth ||
-!twoColumns) {
-children.add(
-SizedBox(
-width:
-double.infinity,
-child: field.widget,
-),
-);
-} else {
-children.add(
-SizedBox(
-width:
-(constraints.maxWidth -
-16) /
-2,
-child: field.widget,
-),
-);
-}
-}
+        for (final field in fields) {
+          if (field.fullWidth ||
+              !twoColumns) {
+            children.add(
+              SizedBox(
+                width:
+                double.infinity,
+                child: field.widget,
+              ),
+            );
+          } else {
+            children.add(
+              SizedBox(
+                width:
+                (constraints.maxWidth -
+                    16) /
+                    2,
+                child: field.widget,
+              ),
+            );
+          }
+        }
 
-return Wrap(
-spacing: 16,
-runSpacing: 16,
-children: children,
-);
-},
-);
-}
+        return Wrap(
+          spacing: 16,
+          runSpacing: 16,
+          children: children,
+        );
+      },
+    );
+  }
 
 // ============================================================
 // FIELD BUILDERS
 // ============================================================
 
-_FieldItem _textField(
-String label,
-TextEditingController controller, {
-int maxLines = 1,
-bool fullWidth = false,
-}) {
-return _FieldItem(
-fullWidth: fullWidth,
-widget:
-TextFormField(
-controller: controller,
-maxLines: maxLines,
-decoration:
-_inputDecoration(
-label,
-),
-),
-);
-}
+  _FieldItem _textField(
+      String label,
+      TextEditingController controller, {
+        int maxLines = 1,
+        bool fullWidth = false,
+      }) {
+    return _FieldItem(
+      fullWidth: fullWidth,
+      widget:
+      TextFormField(
+        controller: controller,
+        maxLines: maxLines,
+        decoration:
+        _inputDecoration(
+          label,
+        ),
+      ),
+    );
+  }
 
-_FieldItem _numberField(
-String label,
-TextEditingController controller,
-) {
-return _FieldItem(
-widget:
-TextFormField(
-controller: controller,
-keyboardType:
-const TextInputType
-    .numberWithOptions(
-decimal: true,
-),
-decoration:
-_inputDecoration(
-label,
-),
-),
-);
-}
+  _FieldItem _numberField(
+      String label,
+      TextEditingController controller,
+      ) {
+    return _FieldItem(
+      widget:
+      TextFormField(
+        controller: controller,
+        keyboardType:
+        const TextInputType
+            .numberWithOptions(
+          decimal: true,
+        ),
+        decoration:
+        _inputDecoration(
+          label,
+        ),
+      ),
+    );
+  }
 
-_FieldItem _dateField(
-String label,
-TextEditingController controller,
-) {
-return _FieldItem(
-widget:
-TextFormField(
-controller: controller,
-readOnly: true,
-onTap: () =>
-_selectDate(
-controller,
-),
-decoration:
-_inputDecoration(
-label,
-).copyWith(
-suffixIcon:
-const Icon(
-Icons
-    .calendar_today_outlined,
-size: 19,
-),
-),
-),
-);
-}
+  _FieldItem _dateField(
+      String label,
+      TextEditingController controller,
+      ) {
+    return _FieldItem(
+      widget:
+      TextFormField(
+        controller: controller,
+        readOnly: true,
+        onTap: () =>
+            _selectDate(
+              controller,
+            ),
+        decoration:
+        _inputDecoration(
+          label,
+        ).copyWith(
+          suffixIcon:
+          const Icon(
+            Icons
+                .calendar_today_outlined,
+            size: 19,
+          ),
+        ),
+      ),
+    );
+  }
 
 // ============================================================
 // INPUT DECORATION
 // ============================================================
 
-InputDecoration _inputDecoration(
-String label,
-) {
-return InputDecoration(
-labelText: label,
-floatingLabelBehavior:
-FloatingLabelBehavior.auto,
-filled: true,
-fillColor: Colors.white,
-contentPadding:
-const EdgeInsets.symmetric(
-horizontal: 14,
-vertical: 13,
-),
-border:
-OutlineInputBorder(
-borderRadius:
-BorderRadius.circular(
-10,
-),
-borderSide:
-const BorderSide(
-color:
-Color(0xFFE2E3E7),
-),
-),
-enabledBorder:
-OutlineInputBorder(
-borderRadius:
-BorderRadius.circular(
-10,
-),
-borderSide:
-const BorderSide(
-color:
-Color(0xFFE2E3E7),
-),
-),
-focusedBorder:
-OutlineInputBorder(
-borderRadius:
-BorderRadius.circular(
-10,
-),
-borderSide:
-const BorderSide(
-color:
-Color(0xFF3155C6),
-width: 1.4,
-),
-),
-labelStyle:
-const TextStyle(
-fontSize: 13,
-color:
-Color(0xFF6B7280),
-),
-);
-}
+  InputDecoration _inputDecoration(
+      String label,
+      ) {
+    return InputDecoration(
+      labelText: label,
+      floatingLabelBehavior:
+      FloatingLabelBehavior.auto,
+      filled: true,
+      fillColor: Colors.white,
+      contentPadding:
+      const EdgeInsets.symmetric(
+        horizontal: 14,
+        vertical: 13,
+      ),
+      border:
+      OutlineInputBorder(
+        borderRadius:
+        BorderRadius.circular(
+          10,
+        ),
+        borderSide:
+        const BorderSide(
+          color:
+          Color(0xFFE2E3E7),
+        ),
+      ),
+      enabledBorder:
+      OutlineInputBorder(
+        borderRadius:
+        BorderRadius.circular(
+          10,
+        ),
+        borderSide:
+        const BorderSide(
+          color:
+          Color(0xFFE2E3E7),
+        ),
+      ),
+      focusedBorder:
+      OutlineInputBorder(
+        borderRadius:
+        BorderRadius.circular(
+          10,
+        ),
+        borderSide:
+        const BorderSide(
+          color:
+          Color(0xFF3155C6),
+          width: 1.4,
+        ),
+      ),
+      labelStyle:
+      const TextStyle(
+        fontSize: 13,
+        color:
+        Color(0xFF6B7280),
+      ),
+    );
+  }
 
 // ============================================================
 // SECTION CARD
 // ============================================================
 
-Widget _sectionCard({
-required IconData icon,
-required String title,
-required String subtitle,
-required Widget child,
-}) {
-return _surfaceCard(
-child: Padding(
-padding:
-const EdgeInsets.all(20),
-child: Column(
-crossAxisAlignment:
-CrossAxisAlignment.start,
-children: [
-Row(
-children: [
-Container(
-width: 40,
-height: 40,
-decoration:
-BoxDecoration(
-color:
-const Color(
-0xFFEFF3FF,
-),
-borderRadius:
-BorderRadius.circular(
-10,
-),
-),
-child: Icon(
-icon,
-color:
-const Color(
-0xFF3155C6,
-),
-size: 21,
-),
-),
+  Widget _sectionCard({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required Widget child,
+  }) {
+    return _surfaceCard(
+      child: Padding(
+        padding:
+        const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment:
+          CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration:
+                  BoxDecoration(
+                    color:
+                    const Color(
+                      0xFFEFF3FF,
+                    ),
+                    borderRadius:
+                    BorderRadius.circular(
+                      10,
+                    ),
+                  ),
+                  child: Icon(
+                    icon,
+                    color:
+                    const Color(
+                      0xFF3155C6,
+                    ),
+                    size: 21,
+                  ),
+                ),
 
-const SizedBox(width: 12),
+                const SizedBox(width: 12),
 
-Expanded(
-child: Column(
-crossAxisAlignment:
-CrossAxisAlignment
-    .start,
-children: [
-Text(
-title,
-style:
-const TextStyle(
-fontSize: 16,
-fontWeight:
-FontWeight.w800,
-color:
-Color(
-0xFF202124,
-),
-),
-),
-const SizedBox(height: 3),
-Text(
-subtitle,
-style:
-const TextStyle(
-fontSize: 12,
-color:
-Color(
-0xFF6B7280,
-),
-),
-),
-],
-),
-),
-],
-),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment:
+                    CrossAxisAlignment
+                        .start,
+                    children: [
+                      Text(
+                        title,
+                        style:
+                        const TextStyle(
+                          fontSize: 16,
+                          fontWeight:
+                          FontWeight.w800,
+                          color:
+                          Color(
+                            0xFF202124,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        subtitle,
+                        style:
+                        const TextStyle(
+                          fontSize: 12,
+                          color:
+                          Color(
+                            0xFF6B7280,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
 
-const SizedBox(height: 20),
+            const SizedBox(height: 20),
 
-child,
-],
-),
-),
-);
-}
+            child,
+          ],
+        ),
+      ),
+    );
+  }
 
-Widget _surfaceCard({
-required Widget child,
-}) {
-return Container(
-width: double.infinity,
-decoration:
-BoxDecoration(
-color: Colors.white,
-borderRadius:
-BorderRadius.circular(
-16,
-),
-border: Border.all(
-color:
-const Color(0xFFE2E3E7),
-),
-boxShadow: [
-BoxShadow(
-color:
-Colors.black.withValues(
-alpha: 0.035,
-),
-blurRadius: 14,
-offset:
-const Offset(0, 5),
-),
-],
-),
-child: child,
-);
-}
+  Widget _surfaceCard({
+    required Widget child,
+  }) {
+    return Container(
+      width: double.infinity,
+      decoration:
+      BoxDecoration(
+        color: Colors.white,
+        borderRadius:
+        BorderRadius.circular(
+          16,
+        ),
+        border: Border.all(
+          color:
+          const Color(0xFFE2E3E7),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color:
+            Colors.black.withValues(
+              alpha: 0.035,
+            ),
+            blurRadius: 14,
+            offset:
+            const Offset(0, 5),
+          ),
+        ],
+      ),
+      child: child,
+    );
+  }
 
-Widget _chip(
-String text,
-) {
-return Container(
-constraints:
-const BoxConstraints(
-maxWidth: 180,
-),
-padding:
-const EdgeInsets.symmetric(
-horizontal: 10,
-vertical: 7,
-),
-decoration:
-BoxDecoration(
-color:
-const Color(0xFFF5F6F8),
-borderRadius:
-BorderRadius.circular(
-20,
-),
-),
-child: Text(
-text,
-maxLines: 1,
-overflow:
-TextOverflow.ellipsis,
-style:
-const TextStyle(
-fontSize: 11,
-fontWeight:
-FontWeight.w600,
-color:
-Color(0xFF555A63),
-),
-),
-);
-}
+  Widget _chip(
+      String text,
+      ) {
+    return Container(
+      constraints:
+      const BoxConstraints(
+        maxWidth: 180,
+      ),
+      padding:
+      const EdgeInsets.symmetric(
+        horizontal: 10,
+        vertical: 7,
+      ),
+      decoration:
+      BoxDecoration(
+        color:
+        const Color(0xFFF5F6F8),
+        borderRadius:
+        BorderRadius.circular(
+          20,
+        ),
+      ),
+      child: Text(
+        text,
+        maxLines: 1,
+        overflow:
+        TextOverflow.ellipsis,
+        style:
+        const TextStyle(
+          fontSize: 11,
+          fontWeight:
+          FontWeight.w600,
+          color:
+          Color(0xFF555A63),
+        ),
+      ),
+    );
+  }
 
 // ============================================================
 // BOTTOM BAR
 // ============================================================
 
-Widget _buildBottomBar() {
-return Container(
-width: double.infinity,
-padding:
-const EdgeInsets.fromLTRB(
-24,
-14,
-24,
-14,
-),
-decoration:
-BoxDecoration(
-color: Colors.white,
-border: Border(
-top: BorderSide(
-color:
-const Color(
-0xFFE2E3E7,
-),
-),
-),
-boxShadow: [
-BoxShadow(
-color:
-Colors.black.withValues(
-alpha: 0.04,
-),
-blurRadius: 12,
-offset:
-const Offset(0, -4),
-),
-],
-),
-child: Center(
-child: ConstrainedBox(
-constraints:
-const BoxConstraints(
-maxWidth: 1200,
-),
-child: Row(
-children: [
-OutlinedButton.icon(
-onPressed:
-_saving ||
-_completing
-? null
-    : () =>
-_saveDraft(
-closeAfterSave:
-true,
-),
-icon: const Icon(
-Icons.save_outlined,
-),
-label:
-const Text(
-'Save Draft',
-),
-),
+  Widget _buildBottomBar() {
+    return Container(
+      width: double.infinity,
+      padding:
+      const EdgeInsets.fromLTRB(
+        24,
+        14,
+        24,
+        14,
+      ),
+      decoration:
+      BoxDecoration(
+        color: Colors.white,
+        border: Border(
+          top: BorderSide(
+            color:
+            const Color(
+              0xFFE2E3E7,
+            ),
+          ),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color:
+            Colors.black.withValues(
+              alpha: 0.04,
+            ),
+            blurRadius: 12,
+            offset:
+            const Offset(0, -4),
+          ),
+        ],
+      ),
+      child: Center(
+        child: ConstrainedBox(
+          constraints:
+          const BoxConstraints(
+            maxWidth: 1200,
+          ),
+          child: Row(
+            children: [
+              OutlinedButton.icon(
+                onPressed:
+                _saving ||
+                    _completing
+                    ? null
+                    : () =>
+                    _saveDraft(
+                      closeAfterSave:
+                      true,
+                    ),
+                icon: const Icon(
+                  Icons.save_outlined,
+                ),
+                label:
+                const Text(
+                  'Save Draft',
+                ),
+              ),
 
-const Spacer(),
+              const Spacer(),
 
-FilledButton.icon(
-onPressed:
-_saving ||
-_completing
-? null
-    : _completeRegistration,
-icon:
-_completing
-? const SizedBox(
-width: 17,
-height: 17,
-child:
-CircularProgressIndicator(
-strokeWidth: 2,
-color:
-Colors.white,
-),
-)
-    : const Icon(
-Icons
-    .arrow_forward_rounded,
-),
-label:
-Text(
-_completing
-? 'Completing...'
-    : 'Complete Registration',
-),
-),
-],
-),
-),
-),
-);
-}
+              FilledButton.icon(
+                onPressed:
+                _saving ||
+                    _completing
+                    ? null
+                    : _completeRegistration,
+                icon:
+                _completing
+                    ? const SizedBox(
+                  width: 17,
+                  height: 17,
+                  child:
+                  CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color:
+                    Colors.white,
+                  ),
+                )
+                    : const Icon(
+                  Icons
+                      .arrow_forward_rounded,
+                ),
+                label:
+                Text(
+                  _completing
+                      ? 'Completing...'
+                      : 'Complete Registration',
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
 
   // ============================================================

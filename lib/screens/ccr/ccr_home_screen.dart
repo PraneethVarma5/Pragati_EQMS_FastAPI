@@ -1,7 +1,6 @@
 import 'package:file_saver/file_saver.dart';
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-
+import '../../services/ccr/ccr_api_client.dart';
 import '../../models/ccr/ccr_case.dart';
 import '../../services/ccr/ccr_service.dart';
 import 'ccr_assignment_screen.dart';
@@ -27,8 +26,8 @@ class CcrHomeScreen extends StatefulWidget {
 
 class _CcrHomeScreenState
     extends State<CcrHomeScreen> {
-  final SupabaseClient _supabase =
-      Supabase.instance.client;
+
+
 
   final CcrService _service =
   CcrService();
@@ -64,6 +63,12 @@ class _CcrHomeScreenState
   final Map<String, List<Map<String, dynamic>>>
   _attachmentsByCcr =
   <String, List<Map<String, dynamic>>>{};
+  /// Tracks which complaints have had their attachment metadata loaded.
+  /// An empty list is also cached, so we don't repeatedly request it.
+  final Set<String> _attachmentsLoadedFor = <String>{};
+
+  /// Tracks attachment requests currently in progress.
+  final Set<String> _attachmentsLoadingFor = <String>{};
 
   // ============================================================
   // INIT
@@ -93,125 +98,62 @@ class _CcrHomeScreenState
     });
 
     try {
-      // --------------------------------------------------------
-      // LOAD CCR CASES
-      // --------------------------------------------------------
+      final dynamic response =
+      await CcrApiClient.get('/dashboard');
 
-      final List<CcrCase> records =
-      await _service.getCcrCases();
+      if (response is! Map) {
+        throw Exception('Invalid CCR dashboard response.');
+      }
 
-      final List<String> ccrIds = records
-          .map((CcrCase ccr) => ccr.id.trim())
-          .where((String id) => id.isNotEmpty)
+      final Map<String, dynamic> dashboard =
+      Map<String, dynamic>.from(response);
+
+      final dynamic rawCases = dashboard['cases'];
+      final dynamic rawActions = dashboard['corrective_actions'];
+
+      if (rawCases is! List) {
+        throw Exception('Dashboard response does not contain a valid cases list.');
+      }
+
+      if (rawActions is! List) {
+        throw Exception('Dashboard response does not contain a valid corrective actions list.');
+      }
+
+      final List<CcrCase> records = rawCases
+          .whereType<Map>()
+          .map(
+            (row) => CcrCase.fromMap(
+          Map<String, dynamic>.from(row),
+        ),
+      )
           .toList();
-
-      // --------------------------------------------------------
-      // PREPARE ADDITIONAL GRID DATA
-      // --------------------------------------------------------
 
       final Map<String, String> complaintDescriptions = {};
       final Map<String, List<Map<String, dynamic>>> actionsByCcr = {};
-      final Map<String, List<Map<String, dynamic>>> attachmentsByCcr = {};
 
-      // Complaint description is stored in the CCR case itself.
       for (final CcrCase ccr in records) {
-        final String description =
-        _value(ccr.complaintDescription);
+        final String description = _value(ccr.complaintDescription);
 
         if (description.isNotEmpty) {
           complaintDescriptions[ccr.id] = description;
         }
       }
 
-      // --------------------------------------------------------
-      // LOAD CORRECTIVE ACTIONS AND ATTACHMENTS
-      // --------------------------------------------------------
+      for (final dynamic raw in rawActions) {
+        if (raw is! Map) continue;
 
-      if (ccrIds.isNotEmpty) {
-        final dynamic actionRows = await _supabase
-            .from('ccr_corrective_actions')
-            .select('''
-              id,
-              ccr_id,
-              occurrence_root_cause,
-              detection_root_cause,
-              corrective_action,
-              dri,
-              result_before,
-              result_after,
-              due_date,
-              completion_date,
-              status,
-              created_at
-            ''')
-            .inFilter('ccr_id', ccrIds)
-            .order('created_at', ascending: true);
+        final Map<String, dynamic> row =
+        Map<String, dynamic>.from(raw);
 
-        if (actionRows is List) {
-          for (final dynamic raw in actionRows) {
-            if (raw is! Map) continue;
+        final String ccrId = _value(row['ccr_id']);
 
-            final Map<String, dynamic> row =
-            Map<String, dynamic>.from(raw);
+        if (ccrId.isEmpty) continue;
 
-            final String ccrId =
-            _value(row['ccr_id']);
-
-            if (ccrId.isEmpty) continue;
-
-            actionsByCcr
-                .putIfAbsent(
-              ccrId,
-                  () => <Map<String, dynamic>>[],
-            )
-                .add(row);
-          }
-        }
-
-        final dynamic attachmentRows = await _supabase
-            .from('ccr_attachments')
-            .select('''
-              id,
-              ccr_id,
-              attachment_type,
-              title,
-              description,
-              storage_bucket,
-              storage_path,
-              original_file_name,
-              mime_type,
-              file_size,
-              uploaded_at
-            ''')
-            .inFilter('ccr_id', ccrIds)
-            .eq('is_deleted', false)
-            .order('uploaded_at', ascending: false);
-
-        if (attachmentRows is List) {
-          for (final dynamic raw in attachmentRows) {
-            if (raw is! Map) continue;
-
-            final Map<String, dynamic> row =
-            Map<String, dynamic>.from(raw);
-
-            final String ccrId =
-            _value(row['ccr_id']);
-
-            if (ccrId.isEmpty) continue;
-
-            attachmentsByCcr
-                .putIfAbsent(
-              ccrId,
-                  () => <Map<String, dynamic>>[],
-            )
-                .add(row);
-          }
-        }
+        actionsByCcr.putIfAbsent(
+          ccrId,
+              () => <Map<String, dynamic>>[],
+        ).add(row);
       }
-
-      // --------------------------------------------------------
-      // UPDATE SCREEN STATE
-      // --------------------------------------------------------
 
       if (!mounted) return;
 
@@ -226,9 +168,10 @@ class _CcrHomeScreenState
           ..clear()
           ..addAll(actionsByCcr);
 
-        _attachmentsByCcr
-          ..clear()
-          ..addAll(attachmentsByCcr);
+        // Do not carry attachment metadata across dashboard refreshes.
+        _attachmentsByCcr.clear();
+        _attachmentsLoadedFor.clear();
+        _attachmentsLoadingFor.clear();
 
         _loading = false;
       });
@@ -241,7 +184,6 @@ class _CcrHomeScreenState
       });
     }
   }
-
   // ============================================================
   // CREATE NEW CCR
   // ============================================================
@@ -571,26 +513,71 @@ class _CcrHomeScreenState
   // VIEW ATTACHMENTS
   // ============================================================
 
-  Future<void> _viewAttachments(
-      CcrCase ccr,
-      ) async {
-    final List<Map<String, dynamic>>
-    attachments =
-        _attachmentsByCcr[ccr.id] ??
-            <Map<String, dynamic>>[];
+  Future<void> _viewAttachments(CcrCase ccr) async {
+    final String ccrId = ccr.id;
+
+    if (_attachmentsLoadingFor.contains(ccrId)) {
+      return;
+    }
+
+    if (!_attachmentsLoadedFor.contains(ccrId)) {
+      setState(() {
+        _attachmentsLoadingFor.add(ccrId);
+      });
+
+      try {
+        final dynamic response =
+        await CcrApiClient.get('/cases/$ccrId/attachments');
+
+        final List<dynamic> rows;
+
+        if (response is List) {
+          rows = response;
+        } else if (response is Map && response['items'] is List) {
+          rows = response['items'] as List;
+        } else if (response is Map && response['data'] is List) {
+          rows = response['data'] as List;
+        } else {
+          throw Exception('Invalid attachment response.');
+        }
+
+        final List<Map<String, dynamic>> attachments = rows
+            .whereType<Map>()
+            .map((row) => Map<String, dynamic>.from(row))
+            .toList();
+
+        if (!mounted) return;
+
+        setState(() {
+          _attachmentsByCcr[ccrId] = attachments;
+          _attachmentsLoadedFor.add(ccrId);
+          _attachmentsLoadingFor.remove(ccrId);
+        });
+      } catch (e) {
+        if (!mounted) return;
+
+        setState(() {
+          _attachmentsLoadingFor.remove(ccrId);
+        });
+
+        _showError(_cleanError(e));
+        return;
+      }
+    }
+
+    if (!mounted) return;
+
+    final List<Map<String, dynamic>> attachments =
+        _attachmentsByCcr[ccrId] ?? <Map<String, dynamic>>[];
 
     if (attachments.isEmpty) {
-      _showError(
-        'No attachments are available for ${ccr.displayNumber}.',
-      );
+      _showMessage('No attachments are available for ${ccr.displayNumber}.');
       return;
     }
 
     await showDialog<void>(
       context: context,
-      builder: (
-          BuildContext dialogContext,
-          ) {
+      builder: (BuildContext dialogContext) {
         return AlertDialog(
           title: Row(
             children: [
@@ -600,9 +587,7 @@ class _CcrHomeScreenState
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: Text(
-                  '${ccr.displayNumber} Attachments',
-                ),
+                child: Text('${ccr.displayNumber} Attachments'),
               ),
             ],
           ),
@@ -610,102 +595,58 @@ class _CcrHomeScreenState
             width: 650,
             child: ListView.separated(
               shrinkWrap: true,
-              itemCount:
-              attachments.length,
-              separatorBuilder:
-                  (
-                  BuildContext context,
-                  int index,
-                  ) =>
-              const Divider(
-                height: 1,
-              ),
-              itemBuilder:
-                  (
-                  BuildContext context,
-                  int index,
-                  ) {
-                final Map<String, dynamic>
-                attachment =
-                attachments[index];
+              itemCount: attachments.length,
+              separatorBuilder: (_, __) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final Map<String, dynamic> attachment = attachments[index];
 
-                final String fileName =
-                _attachmentFileName(
-                  attachment,
-                );
+                final String fileName = _attachmentFileName(attachment);
 
-                final String type =
-                _displayAttachmentType(
-                  attachment[
-                  'attachment_type'
-                  ],
+                final String type = _displayAttachmentType(
+                  attachment['attachment_type'],
                 );
 
                 return ListTile(
-                  contentPadding:
-                  const EdgeInsets.symmetric(
+                  contentPadding: const EdgeInsets.symmetric(
                     horizontal: 4,
                     vertical: 4,
                   ),
                   leading: Container(
                     width: 40,
                     height: 40,
-                    decoration:
-                    BoxDecoration(
-                      color:
-                      const Color(
-                        0xFFEFF3FF,
-                      ),
-                      borderRadius:
-                      BorderRadius.circular(
-                        10,
-                      ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEFF3FF),
+                      borderRadius: BorderRadius.circular(10),
                     ),
                     child: const Icon(
-                      Icons
-                          .insert_drive_file_outlined,
-                      color:
-                      Color(0xFF3155C6),
+                      Icons.insert_drive_file_outlined,
+                      color: Color(0xFF3155C6),
                     ),
                   ),
                   title: Text(
                     fileName,
                     maxLines: 2,
-                    overflow:
-                    TextOverflow.ellipsis,
-                    style:
-                    const TextStyle(
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
                       fontSize: 12.5,
-                      fontWeight:
-                      FontWeight.w700,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
                   subtitle: Padding(
-                    padding:
-                    const EdgeInsets.only(
-                      top: 4,
-                    ),
+                    padding: const EdgeInsets.only(top: 4),
                     child: Text(
                       '$type • ${_fileSizeText(attachment['file_size'])}',
-                      style:
-                      const TextStyle(
+                      style: const TextStyle(
                         fontSize: 11,
-                        color:
-                        Color(0xFF7A818C),
+                        color: Color(0xFF7A818C),
                       ),
                     ),
                   ),
-                  trailing:
-                  IconButton(
+                  trailing: IconButton(
                     tooltip: 'Download',
-                    onPressed: () =>
-                        _downloadAttachment(
-                          attachment,
-                        ),
-                    icon:
-                    const Icon(
-                      Icons
-                          .download_outlined,
+                    onPressed: () => _downloadAttachment(attachment),
+                    icon: const Icon(
+                      Icons.download_outlined,
                       size: 20,
                     ),
                   ),
@@ -715,19 +656,14 @@ class _CcrHomeScreenState
           ),
           actions: [
             TextButton(
-              onPressed: () =>
-                  Navigator.pop(
-                    dialogContext,
-                  ),
-              child:
-              const Text('Close'),
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Close'),
             ),
           ],
         );
       },
     );
   }
-
   // ============================================================
   // DOWNLOAD ATTACHMENT
   // ============================================================
@@ -735,78 +671,41 @@ class _CcrHomeScreenState
   Future<void> _downloadAttachment(
       Map<String, dynamic> attachment,
       ) async {
-    final String bucket =
-        attachment['storage_bucket']
-            ?.toString()
-            .trim() ??
-            '';
+    final String attachmentId = _value(attachment['id']);
 
-    final String path =
-        attachment['storage_path']
-            ?.toString()
-            .trim() ??
-            '';
-
-    if (bucket.isEmpty ||
-        path.isEmpty) {
-      _showError(
-        'Attachment storage information is missing.',
-      );
+    if (attachmentId.isEmpty) {
+      _showError('Attachment ID is missing.');
       return;
     }
 
     try {
-      final bytes =
-      await _supabase.storage
-          .from(bucket)
-          .download(path);
-
-      final String fileName =
-      _attachmentFileName(
-        attachment,
+      final bytes = await CcrApiClient.downloadFileBytes(
+        '/attachments/$attachmentId/file',
       );
 
-      final String extension =
-      _fileExtension(
-        fileName,
-      );
+      final String fileName = _attachmentFileName(attachment);
+      final String extension = _fileExtension(fileName);
 
       final String mimeType =
-      attachment['mime_type']
-          ?.toString()
-          .trim()
-          .isNotEmpty ==
-          true
-          ? attachment['mime_type']
-          .toString()
+      _value(attachment['mime_type']).isNotEmpty
+          ? _value(attachment['mime_type'])
           : 'application/octet-stream';
 
-      await FileSaver.instance
-          .saveFile(
-        name: _removeFileExtension(
-          fileName,
-        ),
+      await FileSaver.instance.saveFile(
+        name: _removeFileExtension(fileName),
         bytes: bytes,
         fileExtension: extension,
         mimeType: MimeType.other,
         customMimeType: mimeType,
       );
 
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
-      _showMessage(
-        'Attachment downloaded successfully.',
-      );
+      _showMessage('Attachment downloaded successfully.');
     } catch (e) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
-      _showError(
-        _cleanError(e),
-      );
+      _showError(_cleanError(e));
     }
   }
 
@@ -1564,12 +1463,24 @@ class _CcrHomeScreenState
                 ),
 
                 OutlinedButton.icon(
-                  onPressed: () => _viewAttachments(ccr),
-                  icon: const Icon(
+                  onPressed: _attachmentsLoadingFor.contains(ccr.id)
+                      ? null
+                      : () => _viewAttachments(ccr),
+                  icon: _attachmentsLoadingFor.contains(ccr.id)
+                      ? const SizedBox(
+                    width: 17,
+                    height: 17,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                      : const Icon(
                     Icons.attach_file_outlined,
                     size: 17,
                   ),
-                  label: const Text('View Attachments'),
+                  label: Text(
+                    _attachmentsLoadingFor.contains(ccr.id)
+                        ? 'Loading...'
+                        : 'View Attachments',
+                  ),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: const Color(0xFF3155C6),
                     side: const BorderSide(
@@ -1577,7 +1488,6 @@ class _CcrHomeScreenState
                     ),
                   ),
                 ),
-
                 FilledButton.icon(
                   onPressed: () => _openCcr(ccr),
                   icon: const Icon(

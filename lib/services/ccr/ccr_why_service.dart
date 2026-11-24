@@ -1,24 +1,19 @@
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../models/ccr/ccr_why_analysis.dart';
+import 'ccr_api_client.dart';
 
 class CcrWhyService {
-  final SupabaseClient _supabase =
-      Supabase.instance.client;
-
   // ============================================================
   // LOAD ALL 5-WHY ANALYSES FOR A CCR
   //
-  // IMPORTANT:
-  // Only ROOT CAUSE VALIDATIONS marked relevance = true are
-  // loaded into this stage.
+  // Only root-cause validations marked relevance = true
+  // participate in the 5-Why stage.
   //
-  // Each Yes validation gets:
+  // Each relevant validation must have:
+  //   1. occurrence
+  //   2. non_detection
   //
-  //   occurrence
-  //   non_detection
-  //
-  // analyses.
+  // Missing analysis records are created automatically.
   // ============================================================
 
   Future<List<CcrWhyAnalysis>> getAnalyses(
@@ -27,297 +22,151 @@ class CcrWhyService {
     final cleanCcrId = ccrId.trim();
 
     if (cleanCcrId.isEmpty) {
+      throw Exception('CCR ID is missing.');
+    }
+
+    // Load root-cause validations for this CCR.
+    final validationResponse = await CcrApiClient.get(
+      '/cases/$cleanCcrId/root-cause-validations',
+    );
+
+    if (validationResponse is! List) {
       throw Exception(
-        'CCR ID is missing.',
+        'Invalid response received while loading root-cause validations.',
       );
     }
 
-    final validations =
-    await _supabase
-        .from(
-      'ccr_root_cause_validations',
-    )
-        .select('''
-              id,
-              fishbone_cause_id,
-              validation_text,
-              relevance,
-              ccr_fishbone_causes!ccr_root_cause_validations_fishbone_cause_id_fkey(
-                id,
-                ccr_id,
-                category_id,
-                cause_text,
-                ccr_fishbone_categories(
-                  id,
-                  name
-                )
-              )
-            ''')
-        .eq(
-      'relevance',
-      true,
-    );
-
-    final yesValidations =
-    List<Map<String, dynamic>>.from(
-      validations,
-    ).where((row) {
-      final cause =
-      row['ccr_fishbone_causes'];
-
-      if (cause is! Map) {
-        return false;
-      }
-
-      return cause['ccr_id']?.toString() ==
-          cleanCcrId;
-    }).toList();
-
-    if (yesValidations.isEmpty) {
-      return [];
-    }
-
-    final validationIds =
-    yesValidations
-        .map(
-          (row) =>
-          row['id']?.toString(),
-    )
-        .whereType<String>()
-        .where(
-          (id) => id.isNotEmpty,
-    )
+    final validations = validationResponse
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item))
+        .where((row) => row['relevance'] == true)
         .toList();
 
-    if (validationIds.isEmpty) {
+    if (validations.isEmpty) {
       return [];
     }
 
-    final analysesResponse =
-    await _supabase
-        .from(
-      'ccr_why_analyses',
-    )
-        .select('''
-              *,
-              ccr_root_cause_validations!ccr_why_analyses_validation_id_fkey(
-                fishbone_cause_id,
-                validation_text,
-                relevance,
-                ccr_fishbone_causes(
-                  id,
-                  ccr_id,
-                  category_id,
-                  cause_text,
-                  ccr_fishbone_categories(
-                    id,
-                    name
-                  )
-                )
-              ),
-              ccr_why_steps(
-                id,
-                analysis_id,
-                why_number,
-                why_text,
-                verification_text,
-                evidence_available,
-                created_at,
-                updated_at
-              )
-            ''')
-        .inFilter(
-      'validation_id',
-      validationIds,
-    )
-        .order(
-      'created_at',
-      ascending: true,
+    // Load existing 5-Why analyses.
+    final analysisResponse = await CcrApiClient.get(
+      '/cases/$cleanCcrId/why-analyses',
     );
 
-    final analyses =
-    List<Map<String, dynamic>>.from(
-      analysesResponse,
-    );
+    if (analysisResponse is! List) {
+      throw Exception(
+        'Invalid response received while loading 5-Why analyses.',
+      );
+    }
 
-    final result =
-    <CcrWhyAnalysis>[];
+    final analyses = analysisResponse
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList();
 
-    for (final validation
-    in yesValidations) {
+    // Ensure both analysis types exist for every relevant
+    // root-cause validation.
+    for (final validation in validations) {
       final validationId =
-      validation['id']?.toString();
+          validation['id']?.toString() ?? '';
 
-      if (validationId == null ||
-          validationId.isEmpty) {
+      if (validationId.isEmpty) {
         continue;
       }
 
-      final cause =
-      validation['ccr_fishbone_causes'];
+      final cause = _extractCause(validation);
 
-      if (cause is! Map) {
-        continue;
-      }
-
-      final causeMap =
-      Map<String, dynamic>.from(cause);
-
-      final category =
-      causeMap[
-      'ccr_fishbone_categories'];
-
-      final categoryMap =
-      category is Map
-          ? Map<String, dynamic>.from(
-        category,
-      )
-          : <String, dynamic>{};
-
-      final matchingAnalyses =
-      analyses.where((analysis) {
-        return analysis['validation_id']
-            ?.toString() ==
-            validationId;
-      }).toList();
-
-      // --------------------------------------------------------
-      // Ensure both analysis types exist.
-      // Existing records are reused.
-      // Missing records are created automatically.
-      // --------------------------------------------------------
+      final causeText =
+          cause['cause_text']?.toString() ?? '';
 
       for (final type in [
         'occurrence',
         'non_detection',
       ]) {
-        Map<String, dynamic>? existing;
+        final existing = analyses.where((analysis) {
+          return analysis['validation_id']?.toString() ==
+              validationId &&
+              analysis['analysis_type']
+                  ?.toString()
+                  .trim()
+                  .toLowerCase() ==
+                  type;
+        }).toList();
 
-        for (final analysis
-        in matchingAnalyses) {
-          if (analysis['analysis_type']
-              ?.toString()
-              .trim()
-              .toLowerCase() ==
-              type) {
-            existing = analysis;
-            break;
-          }
+        if (existing.isNotEmpty) {
+          continue;
         }
 
-        if (existing == null) {
-          final inserted =
-          await _supabase
-              .from(
-            'ccr_why_analyses',
-          )
-              .upsert(
-            {
-              'validation_id':
-              validationId,
-              'analysis_type':
-              type,
-              'potential_root_cause':
-              causeMap[
-              'cause_text']
-                  ?.toString() ??
-                  '',
+        final inserted = await CcrApiClient.post(
+          '/why-analyses',
+          body: {
+            'data': {
+              'validation_id': validationId,
+              'analysis_type': type,
+              'potential_root_cause': causeText,
             },
-            onConflict:
-            'validation_id,analysis_type',
-          )
-              .select('''
-                    *,
-                    ccr_root_cause_validations!ccr_why_analyses_validation_id_fkey(
-                      fishbone_cause_id,
-                      validation_text,
-                      relevance,
-                      ccr_fishbone_causes(
-                        id,
-                        ccr_id,
-                        category_id,
-                        cause_text,
-                        ccr_fishbone_categories(
-                          id,
-                          name
-                        )
-                      )
-                    ),
-                    ccr_why_steps(
-                      id,
-                      analysis_id,
-                      why_number,
-                      why_text,
-                      verification_text,
-                      evidence_available,
-                      created_at,
-                      updated_at
-                    )
-                  ''')
-              .single();
-
-          existing =
-          Map<String, dynamic>.from(
-            inserted,
-          );
-        }
-
-        final enriched =
-        Map<String, dynamic>.from(
-          existing,
+          },
         );
 
-        // ------------------------------------------------------
-        // Make sure the nested validation information exists.
-        // ------------------------------------------------------
-
-        enriched[
-        'ccr_root_cause_validations'] ??=
-            validation;
-
-        final nestedValidation =
-        enriched[
-        'ccr_root_cause_validations'];
-
-        if (nestedValidation is Map) {
-          final nestedValidationMap =
-          Map<String, dynamic>.from(
-            nestedValidation,
+        if (inserted is! Map) {
+          throw Exception(
+            'Invalid response received while creating $type analysis.',
           );
-
-          nestedValidationMap[
-          'ccr_fishbone_causes'] ??=
-              causeMap;
-
-          enriched[
-          'ccr_root_cause_validations'] =
-              nestedValidationMap;
         }
 
-        result.add(
-          CcrWhyAnalysis.fromMap(
-            enriched,
-          ),
+        analyses.add(
+          Map<String, dynamic>.from(inserted),
         );
       }
     }
 
-    result.sort(
-          (a, b) {
-        final causeCompare =
-        a.categoryName.compareTo(
-          b.categoryName,
-        );
+    // Enrich the analysis response with the nested relationships
+    // expected by CcrWhyAnalysis.fromMap().
+    final result = <CcrWhyAnalysis>[];
 
-        if (causeCompare != 0) {
-          return causeCompare;
-        }
+    for (final analysis in analyses) {
+      final validationId =
+          analysis['validation_id']?.toString() ?? '';
 
-        return a.analysisType.compareTo(
-          b.analysisType,
-        );
-      },
-    );
+      final matchingValidations = validations.where(
+            (validation) =>
+        validation['id']?.toString() == validationId,
+      );
+
+      if (matchingValidations.isEmpty) {
+        continue;
+      }
+
+      final validation = matchingValidations.first;
+
+      final cause = _extractCause(validation);
+
+      final enrichedValidation =
+      Map<String, dynamic>.from(validation);
+
+      enrichedValidation['ccr_fishbone_causes'] = cause;
+
+      final enrichedAnalysis =
+      Map<String, dynamic>.from(analysis);
+
+      enrichedAnalysis['ccr_root_cause_validations'] =
+          enrichedValidation;
+
+      enrichedAnalysis['ccr_why_steps'] ??= [];
+
+      result.add(
+        CcrWhyAnalysis.fromMap(enrichedAnalysis),
+      );
+    }
+
+    result.sort((a, b) {
+      final categoryCompare =
+      a.categoryName.compareTo(b.categoryName);
+
+      if (categoryCompare != 0) {
+        return categoryCompare;
+      }
+
+      return a.analysisType.compareTo(b.analysisType);
+    });
 
     return result;
   }
@@ -330,36 +179,31 @@ class CcrWhyService {
     required String analysisId,
     required String potentialRootCause,
   }) async {
-    final cleanId =
-    analysisId.trim();
+    final cleanId = analysisId.trim();
 
     if (cleanId.isEmpty) {
-      throw Exception(
-        '5-Why analysis ID is missing.',
-      );
+      throw Exception('5-Why analysis ID is missing.');
     }
 
-    await _supabase
-        .from(
-      'ccr_why_analyses',
-    )
-        .update({
-      'potential_root_cause':
-      potentialRootCause.trim(),
-      'updated_at':
-      DateTime.now()
-          .toIso8601String(),
-    })
-        .eq(
-      'id',
-      cleanId,
+    await CcrApiClient.patch(
+      '/why-analyses/$cleanId',
+      body: {
+        'data': {
+          'potential_root_cause':
+          potentialRootCause.trim(),
+          'updated_at': DateTime.now().toIso8601String(),
+        },
+      },
     );
   }
 
   // ============================================================
   // SAVE ONE WHY STEP
   //
-  // Uses UPSERT so the same Why can be saved repeatedly.
+  // IMPORTANT:
+  // The backend POST /why-steps endpoint must implement
+  // UPSERT using the unique key:
+  // analysis_id + why_number.
   // ============================================================
 
   Future<CcrWhyStep> saveStep({
@@ -369,53 +213,40 @@ class CcrWhyService {
     required String verificationText,
     required bool? evidenceAvailable,
   }) async {
-    final cleanAnalysisId =
-    analysisId.trim();
+    final cleanAnalysisId = analysisId.trim();
 
     if (cleanAnalysisId.isEmpty) {
-      throw Exception(
-        '5-Why analysis ID is missing.',
-      );
+      throw Exception('5-Why analysis ID is missing.');
     }
 
-    if (whyNumber < 1 ||
-        whyNumber > 5) {
+    if (whyNumber < 1 || whyNumber > 5) {
       throw Exception(
         'Why number must be between 1 and 5.',
       );
     }
 
-    final response =
-    await _supabase
-        .from(
-      'ccr_why_steps',
-    )
-        .upsert(
-      {
-        'analysis_id':
-        cleanAnalysisId,
-        'why_number':
-        whyNumber,
-        'why_text':
-        whyText.trim(),
-        'verification_text':
-        verificationText.trim(),
-        'evidence_available':
-        evidenceAvailable,
-        'updated_at':
-        DateTime.now()
-            .toIso8601String(),
+    final response = await CcrApiClient.post(
+      '/why-steps',
+      body: {
+        'data': {
+          'analysis_id': cleanAnalysisId,
+          'why_number': whyNumber,
+          'why_text': whyText.trim(),
+          'verification_text': verificationText.trim(),
+          'evidence_available': evidenceAvailable,
+          'updated_at': DateTime.now().toIso8601String(),
+        },
       },
-      onConflict:
-      'analysis_id,why_number',
-    )
-        .select()
-        .single();
+    );
+
+    if (response is! Map) {
+      throw Exception(
+        'Invalid response received while saving Why step.',
+      );
+    }
 
     return CcrWhyStep.fromMap(
-      Map<String, dynamic>.from(
-        response,
-      ),
+      Map<String, dynamic>.from(response),
     );
   }
 
@@ -423,53 +254,36 @@ class CcrWhyService {
   // DELETE WHY STEP
   // ============================================================
 
-  Future<void> deleteStep(
-      String stepId,
-      ) async {
-    final cleanId =
-    stepId.trim();
+  Future<void> deleteStep(String stepId) async {
+    final cleanId = stepId.trim();
 
     if (cleanId.isEmpty) {
       return;
     }
 
-    await _supabase
-        .from(
-      'ccr_why_steps',
-    )
-        .delete()
-        .eq(
-      'id',
-      cleanId,
+    await CcrApiClient.delete(
+      '/why-steps/$cleanId',
     );
   }
 
   // ============================================================
   // COMPLETE 5-WHY STAGE
   //
-  // This validates that each YES root cause has usable
-  // Occurrence and Non-Detection analyses.
+  // Every analysis must have:
+  //   1. Potential root cause
+  //   2. At least one completed Why
   //
-  // The user is allowed to stop before Why 5, matching the
-  // supplied FACA format.
+  // Users are allowed to stop before Why 5.
   // ============================================================
 
-  Future<void> completeWhyStage(
-      String ccrId,
-      ) async {
-    final cleanCcrId =
-    ccrId.trim();
+  Future<void> completeWhyStage(String ccrId) async {
+    final cleanCcrId = ccrId.trim();
 
     if (cleanCcrId.isEmpty) {
-      throw Exception(
-        'CCR ID is missing.',
-      );
+      throw Exception('CCR ID is missing.');
     }
 
-    final analyses =
-    await getAnalyses(
-      cleanCcrId,
-    );
+    final analyses = await getAnalyses(cleanCcrId);
 
     if (analyses.isEmpty) {
       throw Exception(
@@ -478,18 +292,14 @@ class CcrWhyService {
     }
 
     for (final analysis in analyses) {
-      if (analysis.potentialRootCause
-          .trim()
-          .isEmpty) {
+      if (analysis.potentialRootCause.trim().isEmpty) {
         throw Exception(
           'Potential root cause is required for every 5-Why analysis.',
         );
       }
 
-      final hasAtLeastOneWhy =
-      analysis.steps.any(
-            (step) =>
-        step.whyText.trim().isNotEmpty,
+      final hasAtLeastOneWhy = analysis.steps.any(
+            (step) => step.whyText.trim().isNotEmpty,
       );
 
       if (!hasAtLeastOneWhy) {
@@ -499,131 +309,35 @@ class CcrWhyService {
       }
     }
 
-    // ----------------------------------------------------------
-    // Determine the next configured workflow stage.
-    // ----------------------------------------------------------
+    // FastAPI handles workflow advancement.
+    await CcrApiClient.post(
+      '/cases/$cleanCcrId/why/complete',
+    );
+  }
 
-    final currentCase =
-    await _supabase
-        .from(
-      'ccr_cases',
-    )
-        .select(
-      'current_stage',
-    )
-        .eq(
-      'id',
-      cleanCcrId,
-    )
-        .single();
+  // ============================================================
+  // EXTRACT FISHBONE CAUSE RELATIONSHIP
+  // ============================================================
 
-    final currentStage =
-    currentCase['current_stage']
-        ?.toString()
-        .trim();
+  Map<String, dynamic> _extractCause(
+      Map<String, dynamic> validation,
+      ) {
+    final rawCause =
+    validation['ccr_fishbone_causes'];
 
-    if (currentStage == null ||
-        currentStage.isEmpty) {
-      throw Exception(
-        'Current CCR workflow stage is missing.',
-      );
-    }
+    final cause = rawCause is Map
+        ? Map<String, dynamic>.from(rawCause)
+        : <String, dynamic>{};
 
-    final currentStageRow =
-    await _supabase
-        .from(
-      'ccr_workflow_stages',
-    )
-        .select(
-      'display_order',
-    )
-        .eq(
-      'stage_key',
-      currentStage,
-    )
-        .single();
+    // Support flattened API responses as well.
+    cause['id'] ??= validation['fishbone_cause_id'];
+    cause['cause_text'] ??= validation['cause_text'] ?? '';
+    cause['category_id'] ??= validation['category_id'];
 
-    final rawOrder =
-    currentStageRow[
-    'display_order'];
+    cause['ccr_fishbone_categories'] ??= {
+      'name': validation['category_name'] ?? '',
+    };
 
-    final currentOrder =
-    rawOrder is num
-        ? rawOrder.toInt()
-        : int.tryParse(
-      rawOrder?.toString() ??
-          '',
-    ) ??
-        0;
-
-    final nextStage =
-    await _supabase
-        .from(
-      'ccr_workflow_stages',
-    )
-        .select(
-      'stage_key',
-    )
-        .eq(
-      'is_active',
-      true,
-    )
-        .gt(
-      'display_order',
-      currentOrder,
-    )
-        .order(
-      'display_order',
-      ascending: true,
-    )
-        .limit(1)
-        .maybeSingle();
-
-    if (nextStage == null) {
-      throw Exception(
-        'No next active CCR workflow stage is configured.',
-      );
-    }
-
-    final nextStageKey =
-    nextStage['stage_key']
-        ?.toString()
-        .trim();
-
-    if (nextStageKey == null ||
-        nextStageKey.isEmpty) {
-      throw Exception(
-        'Next CCR workflow stage is missing.',
-      );
-    }
-
-    final updated =
-    await _supabase
-        .from(
-      'ccr_cases',
-    )
-        .update({
-      'current_stage':
-      nextStageKey,
-      'updated_at':
-      DateTime.now()
-          .toIso8601String(),
-    })
-        .eq(
-      'id',
-      cleanCcrId,
-    )
-        .eq(
-      'current_stage',
-      currentStage,
-    )
-        .select('id');
-
-    if (updated.isEmpty) {
-      throw Exception(
-        'CCR workflow stage was changed by another operation. '
-            'Reload the CCR and try again.',
-      );
-    }
+    return cause;
   }
 }

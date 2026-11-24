@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-
+import '../../services/ccr/ccr_api_client.dart';
 import '../../models/ccr/ccr_case.dart';
 import '../../models/ccr/ccr_corrective_action.dart';
 import '../../services/ccr/ccr_corrective_action_service.dart';
@@ -429,22 +428,28 @@ class _CcrCorrectiveActionScreenState
       // Read the actual stage after completion.
       // --------------------------------------------------------
 
-      final currentCase = await Supabase
-          .instance
-          .client
-          .from('ccr_cases')
-          .select('current_stage')
-          .eq(
-        'id',
-        widget.ccrId,
-      )
-          .single();
+      final dynamic rawReport = await CcrApiClient.get(
+        '/cases/${widget.ccrId}/report',
+      );
 
-      final nextStage = currentCase['current_stage']
+      if (rawReport is! Map) {
+        throw Exception(
+          'Could not retrieve the updated CCR workflow stage.',
+        );
+      }
+
+      final dynamic rawCase = rawReport['case'];
+
+      if (rawCase is! Map) {
+        throw Exception(
+          'The CCR report did not contain case information.',
+        );
+      }
+
+      final nextStage = rawCase['current_stage']
           ?.toString()
           .trim()
           .toLowerCase();
-
       if (nextStage == null || nextStage.isEmpty) {
         throw Exception(
           'Corrective Action completed but the next CCR workflow stage could not be determined.',

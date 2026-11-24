@@ -1,33 +1,29 @@
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../models/ccr/ccr_fishbone.dart';
+import 'ccr_api_client.dart';
 
 class CcrFishboneService {
-  final SupabaseClient _supabase =
-      Supabase.instance.client;
-
   // ============================================================
   // LOAD ACTIVE CATEGORIES
   // ============================================================
 
-  Future<List<CcrFishboneCategory>>
-  getCategories() async {
-    final response = await _supabase
-        .from('ccr_fishbone_categories')
-        .select()
-        .eq(
-      'is_active',
-      true,
-    )
-        .order(
-      'display_order',
-      ascending: true,
+  Future<List<CcrFishboneCategory>> getCategories() async {
+    final response = await CcrApiClient.get(
+      '/fishbone/categories',
     );
 
-    return List<Map<String, dynamic>>
-        .from(response)
+    if (response is! List) {
+      throw Exception(
+        'Invalid response received while loading Fishbone categories.',
+      );
+    }
+
+    return response
+        .whereType<Map>()
         .map(
-      CcrFishboneCategory.fromMap,
+          (item) => CcrFishboneCategory.fromMap(
+        Map<String, dynamic>.from(item),
+      ),
     )
         .toList();
   }
@@ -36,32 +32,70 @@ class CcrFishboneService {
   // LOAD CAUSES FOR CCR
   // ============================================================
 
-  Future<List<CcrFishboneCause>>
-  getCauses(
+  Future<List<CcrFishboneCause>> getCauses(
       String ccrId,
       ) async {
-    final response = await _supabase
-        .from('ccr_fishbone_causes')
-        .select('''
-          *,
-          ccr_fishbone_categories(
-            name
-          )
-        ''')
-        .eq(
-      'ccr_id',
-      ccrId,
-    )
-        .order(
-      'display_order',
-      ascending: true,
+    final cleanCcrId = ccrId.trim();
+
+    if (cleanCcrId.isEmpty) {
+      throw Exception('CCR ID is required.');
+    }
+
+    final response = await CcrApiClient.get(
+      '/cases/$cleanCcrId/fishbone/causes',
     );
 
-    return List<Map<String, dynamic>>
-        .from(response)
+    if (response is! List) {
+      throw Exception(
+        'Invalid response received while loading Fishbone causes.',
+      );
+    }
+
+    final causes = response
+        .whereType<Map>()
         .map(
-      CcrFishboneCause.fromMap,
+          (item) => Map<String, dynamic>.from(item),
     )
+        .toList();
+
+    // The model expects the category relationship under
+    // ccr_fishbone_categories. Enrich it if the API returns
+    // category_id without the nested relationship.
+    final needsCategories = causes.any(
+          (cause) => cause['ccr_fishbone_categories'] == null,
+    );
+
+    Map<String, String> categoryNames = {};
+
+    if (needsCategories) {
+      final categories = await getCategories();
+
+      categoryNames = {
+        for (final category in categories)
+          category.id: category.name,
+      };
+    }
+
+    for (final cause in causes) {
+      if (cause['ccr_fishbone_categories'] != null) {
+        continue;
+      }
+
+      final categoryId = cause['category_id']?.toString() ?? '';
+
+      cause['ccr_fishbone_categories'] = {
+        'name': categoryNames[categoryId] ?? '',
+      };
+    }
+
+    causes.sort((a, b) {
+      final orderA = _toInt(a['display_order']);
+      final orderB = _toInt(b['display_order']);
+      return orderA.compareTo(orderB);
+    });
+
+    return causes
+        .map(CcrFishboneCause.fromMap)
         .toList();
   }
 
@@ -74,286 +108,179 @@ class CcrFishboneService {
     required String categoryId,
     required String causeText,
   }) async {
-    final cleanCause =
-    causeText.trim();
+    final cleanCcrId = ccrId.trim();
+    final cleanCategoryId = categoryId.trim();
+    final cleanCause = causeText.trim();
+
+    if (cleanCcrId.isEmpty) {
+      throw Exception('CCR ID is required.');
+    }
+
+    if (cleanCategoryId.isEmpty) {
+      throw Exception('Fishbone category is required.');
+    }
 
     if (cleanCause.isEmpty) {
+      throw Exception('Cause description is required.');
+    }
+
+    // Find the next display order within this CCR/category.
+    final existingCauses = await getCauses(cleanCcrId);
+
+    final categoryCauses = existingCauses
+        .where((cause) => cause.categoryId == cleanCategoryId)
+        .toList();
+
+    final nextOrder = categoryCauses.isEmpty
+        ? 1
+        : categoryCauses
+        .map((cause) => cause.displayOrder)
+        .reduce((a, b) => a > b ? a : b) +
+        1;
+
+    final response = await CcrApiClient.post(
+      '/fishbone/causes',
+      body: {
+        'data': {
+          'ccr_id': cleanCcrId,
+          'category_id': cleanCategoryId,
+          'cause_text': cleanCause,
+          'display_order': nextOrder,
+        },
+      },
+    );
+
+    if (response is! Map) {
       throw Exception(
-        'Cause description is required.',
+        'Invalid response received while adding Fishbone cause.',
       );
     }
 
-    // ----------------------------------------------------------
-    // Find the next display order inside this category
-    // for this particular CCR.
-    // ----------------------------------------------------------
+    final result = Map<String, dynamic>.from(response);
 
-    final existing = await _supabase
-        .from('ccr_fishbone_causes')
-        .select('display_order')
-        .eq(
-      'ccr_id',
-      ccrId,
-    )
-        .eq(
-      'category_id',
-      categoryId,
-    )
-        .order(
-      'display_order',
-      ascending: false,
-    )
-        .limit(1)
-        .maybeSingle();
-
-    int nextOrder = 1;
-
-    if (existing != null) {
-      final value =
-      existing['display_order'];
-
-      final current = value is num
-          ? value.toInt()
-          : int.tryParse(
-        value?.toString() ?? '',
-      ) ??
-          0;
-
-      nextOrder = current + 1;
-    }
-
-    // ----------------------------------------------------------
-    // Insert the cause
-    // ----------------------------------------------------------
-
-    final response = await _supabase
-        .from('ccr_fishbone_causes')
-        .insert({
-      'ccr_id': ccrId,
-      'category_id': categoryId,
-      'cause_text': cleanCause,
-      'display_order': nextOrder,
-    })
-        .select('''
-          *,
-          ccr_fishbone_categories(
-            name
-          )
-        ''')
-        .single();
-
-    return CcrFishboneCause.fromMap(
-      Map<String, dynamic>.from(
-        response,
-      ),
+    // Ensure the model receives the category relationship.
+    result['ccr_fishbone_categories'] = await _categoryRelation(
+      cleanCategoryId,
     );
+
+    return CcrFishboneCause.fromMap(result);
   }
 
   // ============================================================
   // UPDATE CAUSE
   // ============================================================
 
-  Future<CcrFishboneCause>
-  updateCause({
+  Future<CcrFishboneCause> updateCause({
     required String id,
     required String categoryId,
     required String causeText,
   }) async {
-    final cleanCause =
-    causeText.trim();
+    final cleanId = id.trim();
+    final cleanCategoryId = categoryId.trim();
+    final cleanCause = causeText.trim();
+
+    if (cleanId.isEmpty) {
+      throw Exception('Fishbone cause ID is required.');
+    }
+
+    if (cleanCategoryId.isEmpty) {
+      throw Exception('Fishbone category is required.');
+    }
 
     if (cleanCause.isEmpty) {
+      throw Exception('Cause description is required.');
+    }
+
+    final response = await CcrApiClient.patch(
+      '/fishbone/causes/$cleanId',
+      body: {
+        'data': {
+          'category_id': cleanCategoryId,
+          'cause_text': cleanCause,
+          'updated_at': DateTime.now().toIso8601String(),
+        },
+      },
+    );
+
+    if (response is! Map) {
       throw Exception(
-        'Cause description is required.',
+        'Invalid response received while updating Fishbone cause.',
       );
     }
 
-    final response = await _supabase
-        .from('ccr_fishbone_causes')
-        .update({
-      'category_id': categoryId,
-      'cause_text': cleanCause,
-      'updated_at':
-      DateTime.now()
-          .toIso8601String(),
-    })
-        .eq(
-      'id',
-      id,
-    )
-        .select('''
-          *,
-          ccr_fishbone_categories(
-            name
-          )
-        ''')
-        .single();
+    final result = Map<String, dynamic>.from(response);
 
-    return CcrFishboneCause.fromMap(
-      Map<String, dynamic>.from(
-        response,
-      ),
+    result['ccr_fishbone_categories'] = await _categoryRelation(
+      cleanCategoryId,
     );
+
+    return CcrFishboneCause.fromMap(result);
   }
 
   // ============================================================
   // DELETE CAUSE
   // ============================================================
 
-  Future<void> deleteCause(
-      String id,
-      ) async {
-    await _supabase
-        .from('ccr_fishbone_causes')
-        .delete()
-        .eq(
-      'id',
-      id,
+  Future<void> deleteCause(String id) async {
+    final cleanId = id.trim();
+
+    if (cleanId.isEmpty) {
+      throw Exception('Fishbone cause ID is required.');
+    }
+
+    await CcrApiClient.delete(
+      '/fishbone/causes/$cleanId',
     );
   }
 
   // ============================================================
   // COMPLETE FISHBONE
-  //
-  // The next workflow stage is obtained from the database
-  // workflow master table.
-  //
-  // No workflow stage names are hardcoded here.
   // ============================================================
 
-  Future<void> completeFishbone(
-      String ccrId,
+  Future<void> completeFishbone(String ccrId) async {
+    final cleanCcrId = ccrId.trim();
+
+    if (cleanCcrId.isEmpty) {
+      throw Exception('CCR ID is required.');
+    }
+
+    await CcrApiClient.post(
+      '/cases/$cleanCcrId/fishbone/complete',
+    );
+  }
+
+  // ============================================================
+  // CATEGORY RELATIONSHIP HELPER
+  // ============================================================
+
+  Future<Map<String, dynamic>> _categoryRelation(
+      String categoryId,
       ) async {
-    // ----------------------------------------------------------
-    // Get the current stage
-    // ----------------------------------------------------------
+    final categories = await getCategories();
 
-    final currentCase =
-    await _supabase
-        .from('ccr_cases')
-        .select(
-      'current_stage',
-    )
-        .eq(
-      'id',
-      ccrId,
-    )
-        .single();
+    final matchingCategory = categories.where(
+          (category) => category.id == categoryId,
+    );
 
-    final currentStage =
-    currentCase['current_stage']
-        ?.toString()
-        .trim();
-
-    if (currentStage == null ||
-        currentStage.isEmpty) {
+    if (matchingCategory.isEmpty) {
       throw Exception(
-        'Current CCR workflow stage is missing.',
+        'Fishbone category was not found.',
       );
     }
 
-    // ----------------------------------------------------------
-    // Find the current stage order
-    // ----------------------------------------------------------
+    return {
+      'name': matchingCategory.first.name,
+    };
+  }
 
-    final currentStageRow =
-    await _supabase
-        .from('ccr_workflow_stages')
-        .select(
-      'display_order',
-    )
-        .eq(
-      'stage_key',
-      currentStage,
-    )
-        .single();
+  // ============================================================
+  // INTEGER HELPER
+  // ============================================================
 
-    final rawOrder =
-    currentStageRow[
-    'display_order'];
+  int _toInt(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
 
-    final currentOrder = rawOrder is num
-        ? rawOrder.toInt()
-        : int.tryParse(
-      rawOrder?.toString() ?? '',
-    ) ??
-        0;
-
-    // ----------------------------------------------------------
-    // Find the next active workflow stage
-    // ----------------------------------------------------------
-
-    final nextStage =
-    await _supabase
-        .from('ccr_workflow_stages')
-        .select(
-      'stage_key',
-    )
-        .eq(
-      'is_active',
-      true,
-    )
-        .gt(
-      'display_order',
-      currentOrder,
-    )
-        .order(
-      'display_order',
-      ascending: true,
-    )
-        .limit(1)
-        .maybeSingle();
-
-    if (nextStage == null) {
-      throw Exception(
-        'No next active CCR workflow stage is configured.',
-      );
-    }
-
-    final nextStageKey =
-    nextStage['stage_key']
-        ?.toString()
-        .trim();
-
-    if (nextStageKey == null ||
-        nextStageKey.isEmpty) {
-      throw Exception(
-        'Next CCR workflow stage is missing.',
-      );
-    }
-
-    // ----------------------------------------------------------
-    // Move CCR to the next stage.
-    //
-    // The current-stage condition prevents an old screen from
-    // accidentally overwriting a newer workflow transition.
-    // ----------------------------------------------------------
-
-    final updated =
-    await _supabase
-        .from('ccr_cases')
-        .update({
-      'current_stage':
-      nextStageKey,
-      'updated_at':
-      DateTime.now()
-          .toIso8601String(),
-    })
-        .eq(
-      'id',
-      ccrId,
-    )
-        .eq(
-      'current_stage',
-      currentStage,
-    )
-        .select('id');
-
-    if (updated.isEmpty) {
-      throw Exception(
-        'CCR workflow stage was changed by another operation. '
-            'Reload the CCR and try again.',
-      );
-    }
+    return int.tryParse(value?.toString() ?? '') ?? 0;
   }
 }

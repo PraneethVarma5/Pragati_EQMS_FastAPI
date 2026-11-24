@@ -1,12 +1,9 @@
-import 'package:supabase_flutter/supabase_flutter.dart';
-import 'ccr_admin_service.dart';
+
+import 'ccr_api_client.dart';
 import 'ccr_admin_service.dart';
 
 class CcrTeamService {
   CcrTeamService._();
-
-  static final SupabaseClient _supabase =
-      Supabase.instance.client;
 
   // ============================================================
   // GET TEAMS
@@ -15,37 +12,41 @@ class CcrTeamService {
   static Future<List<Map<String, dynamic>>> getTeams({
     bool activeOnly = false,
   }) async {
-    final baseQuery = _supabase.from('ccr_teams').select(
-      '''
-      id,
-      team_leader_name,
-      is_active,
-      created_at,
-      updated_at,
-      ccr_team_members(
-        id,
-        team_id,
-        member_name,
-        created_at
-      )
-      ''',
+    final response = await CcrApiClient.get(
+      '/teams',
+      query: {
+        'active_only': activeOnly.toString(),
+      },
     );
 
-    final response = activeOnly
-        ? await baseQuery
-        .eq('is_active', true)
-        .order(
-      'created_at',
-      ascending: false,
-    )
-        : await baseQuery.order(
-      'created_at',
-      ascending: false,
-    );
+    if (response is! List) {
+      throw Exception('Invalid response received while loading CCR teams.');
+    }
 
-    return List<Map<String, dynamic>>.from(
-      response,
-    );
+    final teams = response
+        .whereType<Map>()
+        .map((team) => Map<String, dynamic>.from(team))
+        .toList();
+
+    // Preserve the original Supabase ordering:
+    // newest teams first.
+    teams.sort((a, b) {
+      final dateA = DateTime.tryParse(
+        a['created_at']?.toString() ?? '',
+      );
+
+      final dateB = DateTime.tryParse(
+        b['created_at']?.toString() ?? '',
+      );
+
+      if (dateA == null && dateB == null) return 0;
+      if (dateA == null) return 1;
+      if (dateB == null) return -1;
+
+      return dateB.compareTo(dateA);
+    });
+
+    return teams;
   }
 
   // ============================================================
@@ -55,27 +56,21 @@ class CcrTeamService {
   static Future<Map<String, dynamic>?> getTeam(
       String teamId,
       ) async {
-    final response = await _supabase
-        .from('ccr_teams')
-        .select(
-      '''
-          id,
-          team_leader_name,
-          is_active,
-          created_at,
-          updated_at,
-          ccr_team_members(
-            id,
-            team_id,
-            member_name,
-            created_at
-          )
-          ''',
-    )
-        .eq('id', teamId)
-        .maybeSingle();
+    final id = teamId.trim();
 
-    return response;
+    if (id.isEmpty) {
+      throw Exception('Team ID is required.');
+    }
+
+    final response = await CcrApiClient.get(
+      '/teams/$id',
+    );
+
+    if (response is! Map) {
+      return null;
+    }
+
+    return Map<String, dynamic>.from(response);
   }
 
   // ============================================================
@@ -89,21 +84,16 @@ class CcrTeamService {
     final leader = teamLeaderName.trim();
 
     if (leader.isEmpty) {
-      throw Exception(
-        'Team leader name is required.',
-      );
+      throw Exception('Team leader name is required.');
     }
 
-    final members =
-    _cleanMemberNames(
+    final members = _cleanMemberNames(
       memberNames,
       leader,
     );
 
     if (members.isEmpty) {
-      throw Exception(
-        'At least one team member is required.',
-      );
+      throw Exception('At least one team member is required.');
     }
 
     return CcrAdminService.createTeam(
@@ -111,6 +101,7 @@ class CcrTeamService {
       memberNames: members,
     );
   }
+
   // ============================================================
   // UPDATE TEAM
   // ============================================================
@@ -124,27 +115,20 @@ class CcrTeamService {
     final leader = teamLeaderName.trim();
 
     if (id.isEmpty) {
-      throw Exception(
-        'Team ID is required.',
-      );
+      throw Exception('Team ID is required.');
     }
 
     if (leader.isEmpty) {
-      throw Exception(
-        'Team leader name is required.',
-      );
+      throw Exception('Team leader name is required.');
     }
 
-    final members =
-    _cleanMemberNames(
+    final members = _cleanMemberNames(
       memberNames,
       leader,
     );
 
     if (members.isEmpty) {
-      throw Exception(
-        'At least one team member is required.',
-      );
+      throw Exception('At least one team member is required.');
     }
 
     await CcrAdminService.updateTeam(
@@ -165,9 +149,7 @@ class CcrTeamService {
     final id = teamId.trim();
 
     if (id.isEmpty) {
-      throw Exception(
-        'Team ID is required.',
-      );
+      throw Exception('Team ID is required.');
     }
 
     await CcrAdminService.setTeamActive(
@@ -175,51 +157,52 @@ class CcrTeamService {
       isActive: isActive,
     );
   }
+
   // ============================================================
-  // GET TEAM MEMBERS
+  // DELETE TEAM
   // ============================================================
+
   static Future<void> deleteTeam({
     required String teamId,
   }) async {
     final id = teamId.trim();
 
     if (id.isEmpty) {
-      throw Exception(
-        'Team ID is required.',
-      );
+      throw Exception('Team ID is required.');
     }
 
     await CcrAdminService.deleteTeam(
       teamId: id,
     );
   }
-  static Future<List<Map<String, dynamic>>>
-  getTeamMembers(
+
+  // ============================================================
+  // GET TEAM MEMBERS
+  // ============================================================
+
+  static Future<List<Map<String, dynamic>>> getTeamMembers(
       String teamId,
       ) async {
-    final response =
-    await _supabase
-        .from('ccr_team_members')
-        .select(
-      '''
-              id,
-              team_id,
-              member_name,
-              created_at
-              ''',
-    )
-        .eq(
-      'team_id',
-      teamId,
-    )
-        .order(
-      'created_at',
-      ascending: true,
+    final id = teamId.trim();
+
+    if (id.isEmpty) {
+      throw Exception('Team ID is required.');
+    }
+
+    final response = await CcrApiClient.get(
+      '/teams/$id/members',
     );
 
-    return List<Map<String, dynamic>>.from(
-      response,
-    );
+    if (response is! List) {
+      throw Exception(
+        'Invalid response received while loading team members.',
+      );
+    }
+
+    return response
+        .whereType<Map>()
+        .map((member) => Map<String, dynamic>.from(member))
+        .toList();
   }
 
   // ============================================================
@@ -228,41 +211,48 @@ class CcrTeamService {
 
   static Future<List<Map<String, dynamic>>>
   getActiveTeamsForSelection() async {
-    final teams =
-    await getTeams(
+    final teams = await getTeams(
       activeOnly: true,
     );
 
-    return teams.map((team) {
-      final members =
-      <Map<String, dynamic>>[];
+    // FastAPI's GET /teams returns the team records.
+    // Fetch each team's members separately.
+    final result = await Future.wait(
+      teams.map((team) async {
+        final teamId = team['id']?.toString() ?? '';
 
-      final raw =
-      team['ccr_team_members'];
-
-      if (raw is List) {
-        for (final member in raw) {
-          if (member is Map) {
-            members.add(
-              Map<String, dynamic>.from(
-                member,
-              ),
-            );
-          }
+        if (teamId.isEmpty) {
+          return {
+            'id': team['id'],
+            'team_leader_name': team['team_leader_name'],
+            'is_active': team['is_active'],
+            'members': <Map<String, dynamic>>[],
+          };
         }
-      }
 
-      return {
-        'id':
-        team['id'],
-        'team_leader_name':
-        team['team_leader_name'],
-        'is_active':
-        team['is_active'],
-        'members':
-        members,
-      };
-    }).toList();
+        final details = await getTeam(teamId);
+
+        final rawMembers = details?['ccr_team_members'];
+
+        final members = rawMembers is List
+            ? rawMembers
+            .whereType<Map>()
+            .map(
+              (member) => Map<String, dynamic>.from(member),
+        )
+            .toList()
+            : <Map<String, dynamic>>[];
+
+        return {
+          'id': team['id'],
+          'team_leader_name': team['team_leader_name'],
+          'is_active': team['is_active'],
+          'members': members,
+        };
+      }),
+    );
+
+    return result;
   }
 
   // ============================================================
@@ -273,55 +263,37 @@ class CcrTeamService {
     required String ccrId,
     required String teamId,
   }) async {
-    final caseId =
-    ccrId.trim();
-
-    final selectedTeamId =
-    teamId.trim();
+    final caseId = ccrId.trim();
+    final selectedTeamId = teamId.trim();
 
     if (caseId.isEmpty) {
-      throw Exception(
-        'CCR ID is required.',
-      );
+      throw Exception('CCR ID is required.');
     }
 
     if (selectedTeamId.isEmpty) {
-      throw Exception(
-        'Team ID is required.',
-      );
+      throw Exception('Team ID is required.');
     }
 
-    final team =
-    await getTeam(
-      selectedTeamId,
-    );
+    final team = await getTeam(selectedTeamId);
 
     if (team == null) {
-      throw Exception(
-        'Selected team was not found.',
-      );
+      throw Exception('Selected team was not found.');
     }
 
-    final leader =
-    team['team_leader_name']
+    final leader = team['team_leader_name']
         ?.toString()
         .trim();
 
-    if (leader == null ||
-        leader.isEmpty) {
-      throw Exception(
-        'Selected team has no team leader.',
-      );
+    if (leader == null || leader.isEmpty) {
+      throw Exception('Selected team has no team leader.');
     }
 
-    final snapshot =
-    <String>[];
+    final snapshot = <String>[];
 
     // Leader is stored first.
     snapshot.add(leader);
 
-    final rawMembers =
-    team['ccr_team_members'];
+    final rawMembers = team['ccr_team_members'];
 
     if (rawMembers is List) {
       for (final member in rawMembers) {
@@ -329,69 +301,30 @@ class CcrTeamService {
           continue;
         }
 
-        final name =
-        member['member_name']
+        final name = member['member_name']
             ?.toString()
             .trim();
 
-        if (name == null ||
-            name.isEmpty) {
+        if (name == null || name.isEmpty) {
           continue;
         }
 
-        if (!_containsIgnoreCase(
-          snapshot,
-          name,
-        )) {
+        if (!_containsIgnoreCase(snapshot, name)) {
           snapshot.add(name);
         }
       }
     }
 
-    // Remove previous snapshot.
-    await _supabase
-        .from('ccr_case_team_members')
-        .delete()
-        .eq(
-      'ccr_id',
-      caseId,
-    );
-
-    final rows =
-    snapshot.map(
-          (name) {
-        return {
-          'ccr_id': caseId,
-          'member_name': name,
-        };
+    // Save the historical team snapshot through FastAPI.
+    await CcrApiClient.put(
+      '/cases/$caseId/team-snapshot',
+      body: {
+        'data': {
+          'team_id': selectedTeamId,
+          'team_leader_name': leader,
+          'members': snapshot,
+        },
       },
-    ).toList();
-
-    if (rows.isNotEmpty) {
-      await _supabase
-          .from(
-        'ccr_case_team_members',
-      )
-          .insert(rows);
-    }
-
-    // Save selected team on CCR.
-    //
-    // team_leader is retained because existing CCR
-    // functionality/reporting may still use it.
-    await _supabase
-        .from('ccr_cases')
-        .update({
-      'team_id':
-      selectedTeamId,
-      'team_leader':
-      leader,
-      'updated_at':
-      DateTime.now().toIso8601String(),
-    })
-        .eq(
-      'id',
-      caseId,
     );
   }
 
@@ -400,63 +333,29 @@ class CcrTeamService {
   // ============================================================
 
   static Future<List<Map<String, dynamic>>>
-  getCcrTeamSnapshot(
-      String ccrId,
-      ) async {
-    final response =
-    await _supabase
-        .from(
-      'ccr_case_team_members',
-    )
-        .select(
-      '''
-              id,
-              ccr_id,
-              member_name,
-              created_at
-              ''',
-    )
-        .eq(
-      'ccr_id',
-      ccrId,
-    )
-        .order(
-      'created_at',
-      ascending: true,
-    );
+  getCcrTeamSnapshot(String ccrId) async {
+    final caseId = ccrId.trim();
 
-    return List<Map<String, dynamic>>.from(
-      response,
-    );
-  }
-
-  // ============================================================
-  // INSERT MEMBERS
-  // ============================================================
-
-  static Future<void> _insertMembers(
-      String teamId,
-      List<String> memberNames,
-      ) async {
-    if (memberNames.isEmpty) {
-      return;
+    if (caseId.isEmpty) {
+      throw Exception('CCR ID is required.');
     }
 
-    final rows =
-    memberNames.map(
-          (name) {
-        return {
-          'team_id':
-          teamId,
-          'member_name':
-          name,
-        };
-      },
-    ).toList();
+    final response = await CcrApiClient.get(
+      '/cases/$caseId/team-snapshot',
+    );
 
-    await _supabase
-        .from('ccr_team_members')
-        .insert(rows);
+    if (response is! List) {
+      throw Exception(
+        'Invalid response received while loading CCR team snapshot.',
+      );
+    }
+
+    return response
+        .whereType<Map>()
+        .map(
+          (member) => Map<String, dynamic>.from(member),
+    )
+        .toList();
   }
 
   // ============================================================
@@ -467,28 +366,20 @@ class CcrTeamService {
       List<String> names,
       String leader,
       ) {
-    final result =
-    <String>[];
+    final result = <String>[];
 
     for (final raw in names) {
-      final name =
-      raw.trim();
+      final name = raw.trim();
 
       if (name.isEmpty) {
         continue;
       }
 
-      if (_sameName(
-        name,
-        leader,
-      )) {
+      if (_sameName(name, leader)) {
         continue;
       }
 
-      if (!_containsIgnoreCase(
-        result,
-        name,
-      )) {
+      if (!_containsIgnoreCase(result, name)) {
         result.add(name);
       }
     }
@@ -518,9 +409,4 @@ class CcrTeamService {
     return first.trim().toLowerCase() ==
         second.trim().toLowerCase();
   }
-  // ============================================================
-// DELETE TEAM
-// ============================================================
-
-
 }

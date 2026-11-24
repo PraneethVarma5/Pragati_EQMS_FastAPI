@@ -35,26 +35,20 @@ class _CcrLoginScreenState
   // LOGIN
   // ============================================================
 
+
   Future<void> _login() async {
     if (_loading) return;
 
-    final email =
-    _emailController.text.trim();
-
-    final password =
-        _passwordController.text;
+    final email = _emailController.text.trim();
+    final password = _passwordController.text;
 
     if (email.isEmpty) {
-      _showMessage(
-        'Email address is required.',
-      );
+      _showMessage('Email address is required.');
       return;
     }
 
     if (password.isEmpty) {
-      _showMessage(
-        'Password is required.',
-      );
+      _showMessage('Password is required.');
       return;
     }
 
@@ -63,27 +57,32 @@ class _CcrLoginScreenState
     });
 
     try {
-      final user =
-      await CcrAuthService.login(
+      final user = await CcrAuthService.login(
         email: email,
         password: password,
       );
 
       if (!mounted) return;
 
-      // --------------------------------------------------------
-      // New users created by Admin must change the default
-      // password before entering the Admin dashboard.
-      // --------------------------------------------------------
+      // CCR Admin Dashboard is restricted to administrators.
+      if (!user.isAdmin) {
+        await CcrSession.clear();
+
+        if (!mounted) return;
+
+        await _showErrorDialog(
+          'Access denied',
+          'This account does not have CCR administrator privileges.',
+        );
+        return;
+      }
 
       if (user.mustChangePassword) {
         await _showForcedChangePasswordDialog();
 
         if (!mounted) return;
 
-        if (CcrSession.currentUser
-            ?.mustChangePassword ==
-            true) {
+        if (CcrSession.currentUser?.mustChangePassword == true) {
           return;
         }
       }
@@ -97,7 +96,8 @@ class _CcrLoginScreenState
     } catch (e) {
       if (!mounted) return;
 
-      _showMessage(
+      await _showErrorDialog(
+        'Login failed',
         _cleanError(e),
       );
     } finally {
@@ -922,29 +922,67 @@ class _CcrLoginScreenState
   // HELPERS
   // ============================================================
 
+
   String _cleanError(Object error) {
-    return error
-        .toString()
-        .replaceFirst(
-      'Exception: ',
-      '',
-    )
-        .replaceFirst(
-      'PostgrestException(message: ',
+    var message = error.toString().trim();
+
+    message = message.replaceFirst(
+      RegExp(r'^Exception:\s*'),
       '',
     );
+
+    message = message.replaceFirst(
+      RegExp(r'^Error:\s*'),
+      '',
+    );
+
+    if (message.isEmpty) {
+      return 'An unexpected error occurred. Please try again.';
+    }
+
+    return message;
   }
 
-  void _showMessage(
-      String message,
-      ) {
+  void _showMessage(String message) {
     if (!mounted) return;
 
     ScaffoldMessenger.of(context)
-        .showSnackBar(
-      SnackBar(
-        content: Text(message),
-      ),
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(message),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+  }
+
+  Future<void> _showErrorDialog(
+      String title,
+      String message,
+      ) async {
+    if (!mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          icon: const Icon(
+            Icons.error_outline,
+            color: Colors.red,
+            size: 34,
+          ),
+          title: Text(title),
+          content: SelectableText(message),
+          actions: [
+            FilledButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+              },
+              child: const Text('OK'),
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -952,16 +990,29 @@ class _CcrLoginScreenState
       BuildContext dialogContext,
       String message,
       ) {
-    if (!dialogContext.mounted) {
-      return;
-    }
+    if (!dialogContext.mounted) return;
 
-    ScaffoldMessenger.of(
-      dialogContext,
-    ).showSnackBar(
-      SnackBar(
-        content: Text(message),
-      ),
+    showDialog<void>(
+      context: dialogContext,
+      builder: (errorContext) {
+        return AlertDialog(
+          icon: const Icon(
+            Icons.error_outline,
+            color: Colors.red,
+            size: 32,
+          ),
+          title: const Text('Unable to continue'),
+          content: SelectableText(message),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(errorContext);
+              },
+              child: const Text('OK'),
+            ),
+          ],
+        );
+      },
     );
   }
 

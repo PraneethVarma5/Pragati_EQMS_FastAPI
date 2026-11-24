@@ -1,78 +1,66 @@
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../models/ccr/ccr_corrective_action.dart';
+import 'ccr_api_client.dart';
 
 class CcrCorrectiveActionService {
-  final SupabaseClient _supabase =
-      Supabase.instance.client;
-
   // ============================================================
   // LOAD CORRECTIVE ACTIONS
-  //
-  // One corrective-action row represents one validated
-  // root-cause validation.
-  //
-  // Verification is NOT part of the Corrective Action stage.
   // ============================================================
 
-  Future<List<CcrCorrectiveAction>>
-  getCorrectiveActions(
+  Future<List<CcrCorrectiveAction>> getCorrectiveActions(
       String ccrId,
       ) async {
     final cleanCcrId = ccrId.trim();
 
     if (cleanCcrId.isEmpty) {
+      throw Exception('CCR ID is missing.');
+    }
+
+    final response = await CcrApiClient.get(
+      '/cases/$cleanCcrId/corrective-actions',
+    );
+
+    if (response is! List) {
       throw Exception(
-        'CCR ID is missing.',
+        'Invalid response received while loading corrective actions.',
       );
     }
 
-    final response = await _supabase
-        .from('ccr_corrective_actions')
-        .select('*')
-        .eq(
-      'ccr_id',
-      cleanCcrId,
-    )
-        .order(
-      'created_at',
-      ascending: true,
-    );
+    final rows = response
+        .whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row))
+        .toList();
 
-    final rows =
-    List<Map<String, dynamic>>.from(
-      response,
-    );
+    rows.sort((a, b) {
+      final aDate = DateTime.tryParse(
+        a['created_at']?.toString() ?? '',
+      );
+
+      final bDate = DateTime.tryParse(
+        b['created_at']?.toString() ?? '',
+      );
+
+      if (aDate == null || bDate == null) {
+        return 0;
+      }
+
+      return aDate.compareTo(bDate);
+    });
 
     return rows
-        .map(
-          (row) =>
-          CcrCorrectiveAction.fromMap(
-            row,
-          ),
-    )
+        .map(CcrCorrectiveAction.fromMap)
         .toList();
   }
 
   // ============================================================
   // CREATE ACTIONS FROM VALIDATED YES ROOT CAUSES
   //
-  // IMPORTANT:
-  //
   // One YES validation = one corrective action plan.
   //
-  // Occurrence and Non-Detection 5-Why analyses are paired
-  // using validation_id.
+  // Occurrence and Non-Detection analyses are paired using
+  // validation_id.
   //
-  // The root cause is the LAST NON-EMPTY WHY.
-  //
-  // Therefore:
-  //
-  // Why 3 final value -> root cause
-  // Why 4 final value -> root cause
-  // Why 5 final value -> root cause
-  //
-  // It is NOT assumed that Why 5 must always be used.
+  // The LAST NON-EMPTY WHY becomes the root cause.
   // ============================================================
 
   Future<void> ensureActionsFromValidatedCauses(
@@ -81,280 +69,198 @@ class CcrCorrectiveActionService {
     final cleanCcrId = ccrId.trim();
 
     if (cleanCcrId.isEmpty) {
-      throw Exception(
-        'CCR ID is missing.',
-      );
+      throw Exception('CCR ID is missing.');
     }
 
     // ----------------------------------------------------------
-    // Get all validations belonging to this CCR.
+    // Load root-cause validations for this CCR.
     // ----------------------------------------------------------
 
-    final validationsResponse =
-    await _supabase
-        .from(
-      'ccr_root_cause_validations',
-    )
-        .select('''
-              id,
-              fishbone_cause_id,
-              validation_text,
-              relevance,
-              ccr_fishbone_causes!ccr_root_cause_validations_fishbone_cause_id_fkey(
-                id,
-                ccr_id,
-                cause_text,
-                ccr_fishbone_categories(
-                  id,
-                  name
-                )
-              )
-            ''')
-        .eq(
-      'relevance',
-      true,
+    final validationResponse = await CcrApiClient.get(
+      '/cases/$cleanCcrId/root-cause-validations',
     );
 
-    final validations =
-    List<Map<String, dynamic>>.from(
-      validationsResponse,
-    );
+    if (validationResponse is! List) {
+      throw Exception(
+        'Invalid response received while loading root-cause validations.',
+      );
+    }
 
-    // ----------------------------------------------------------
-    // Keep only validations whose fishbone cause belongs to
-    // the current CCR.
-    // ----------------------------------------------------------
-
-    final yesValidations =
-    validations.where(
-          (row) {
-        final cause =
-        row['ccr_fishbone_causes'];
-
-        if (cause is! Map) {
-          return false;
-        }
-
-        return cause['ccr_id']?.toString() ==
-            cleanCcrId;
-      },
-    ).toList();
+    final yesValidations = validationResponse
+        .whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row))
+        .where((row) => row['relevance'] == true)
+        .toList();
 
     if (yesValidations.isEmpty) {
       return;
     }
 
     // ----------------------------------------------------------
-    // Problem statement comes from CCR registration.
+    // Load CCR problem statement.
     // ----------------------------------------------------------
 
-    final ccrResponse = await _supabase
-        .from('ccr_cases')
-        .select('problem_description')
-        .eq(
-      'id',
-      cleanCcrId,
-    )
-        .single();
+    final caseResponse = await CcrApiClient.get(
+      '/cases/$cleanCcrId',
+    );
+
+    if (caseResponse is! Map) {
+      throw Exception(
+        'Unable to load CCR details.',
+      );
+    }
+
+    final caseData = Map<String, dynamic>.from(caseResponse);
 
     final problemStatement =
-        ccrResponse['problem_description']
-            ?.toString()
-            .trim() ??
-            '';
+        caseData['problem_description']?.toString().trim() ?? '';
 
     // ----------------------------------------------------------
-    // Existing corrective actions.
+    // Load existing corrective actions.
     //
     // validation_id is the permanent relationship.
-    //
-    // DO NOT compare root-cause text because two separate
-    // validations may have identical text and still require
-    // separate corrective-action rows.
+    // Do not compare root-cause text to identify duplicates.
     // ----------------------------------------------------------
 
-    final existingResponse =
-    await _supabase
-        .from(
-      'ccr_corrective_actions',
-    )
-        .select(
-      'id, ccr_id, validation_id',
-    )
-        .eq(
-      'ccr_id',
-      cleanCcrId,
+    final existingResponse = await CcrApiClient.get(
+      '/cases/$cleanCcrId/corrective-actions',
     );
 
-    final existing =
-    List<Map<String, dynamic>>.from(
-      existingResponse,
-    );
+    if (existingResponse is! List) {
+      throw Exception(
+        'Invalid response received while checking existing corrective actions.',
+      );
+    }
 
-    // ----------------------------------------------------------
-    // Get validation IDs.
-    // ----------------------------------------------------------
-
-    final validationIds =
-    yesValidations
-        .map(
-          (row) =>
-          row['id']?.toString(),
-    )
-        .whereType<String>()
-        .where(
-          (id) => id.isNotEmpty,
-    )
+    final existing = existingResponse
+        .whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row))
         .toList();
+
+    // ----------------------------------------------------------
+    // Collect relevant validation IDs.
+    // ----------------------------------------------------------
+
+    final validationIds = yesValidations
+        .map((row) => row['id']?.toString())
+        .whereType<String>()
+        .where((id) => id.trim().isNotEmpty)
+        .toSet();
 
     if (validationIds.isEmpty) {
       return;
     }
 
     // ----------------------------------------------------------
-    // Get all 5-Why analyses for those validations.
+    // Load all 5-Why analyses for this CCR.
+    //
+    // The API response must include ccr_why_steps.
     // ----------------------------------------------------------
 
-    final analysesResponse =
-    await _supabase
-        .from(
-      'ccr_why_analyses',
-    )
-        .select('''
-              id,
-              validation_id,
-              analysis_type,
-              potential_root_cause,
-              ccr_why_steps(
-                why_number,
-                why_text
-              )
-            ''')
-        .inFilter(
-      'validation_id',
-      validationIds,
+    final analysesResponse = await CcrApiClient.get(
+      '/cases/$cleanCcrId/why-analyses',
     );
 
-    final analysisRows =
-    List<Map<String, dynamic>>.from(
-      analysesResponse,
-    );
+    if (analysesResponse is! List) {
+      throw Exception(
+        'Invalid response received while loading 5-Why analyses.',
+      );
+    }
+
+    final analysisRows = analysesResponse
+        .whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row))
+        .toList();
 
     // ----------------------------------------------------------
-    // Create one CA row for EVERY YES validation.
-    // ----------------------------------------------------------
+// Create OR update one corrective-action row for every
+// Yes validation.
+//
+// Existing rows must also be updated because their root-cause
+// fields may have been empty when they were first created.
+// ----------------------------------------------------------
 
-    for (final validation
-    in yesValidations) {
-      final validationId =
-      validation['id']?.toString();
+    for (final validation in yesValidations) {
+      final validationId = validation['id']?.toString();
 
-      if (validationId == null ||
-          validationId.isEmpty) {
+      if (validationId == null || validationId.trim().isEmpty) {
         continue;
       }
 
-      // --------------------------------------------------------
-      // Find Occurrence 5-Why for this validation.
-      // --------------------------------------------------------
+      // Find an existing corrective-action row using validation_id.
+      Map<String, dynamic>? existingAction;
 
-      final occurrence =
-      _findAnalysis(
+      for (final row in existing) {
+        if (row['validation_id']?.toString().trim() ==
+            validationId.trim()) {
+          existingAction = row;
+          break;
+        }
+      }
+
+      // Find Occurrence analysis.
+      final occurrence = _findAnalysis(
         analysisRows,
         validationId,
         'occurrence',
       );
 
-      // --------------------------------------------------------
-      // Find Non-Detection 5-Why for this validation.
-      // --------------------------------------------------------
-
-      final detection =
-      _findAnalysis(
+      // Find Non-Detection analysis.
+      final detection = _findAnalysis(
         analysisRows,
         validationId,
         'non_detection',
       );
 
-      // --------------------------------------------------------
-      // LAST NON-EMPTY WHY becomes root cause.
-      // --------------------------------------------------------
-
+      // Extract the deepest non-empty Why from each analysis.
       final occurrenceRootCause =
-      _rootCauseFromAnalysis(
-        occurrence,
-      );
+      _rootCauseFromAnalysis(occurrence);
 
       final detectionRootCause =
-      _rootCauseFromAnalysis(
-        detection,
-      );
+      _rootCauseFromAnalysis(detection);
 
       // --------------------------------------------------------
-      // Check duplicate using validation_id.
+      // UPDATE EXISTING CORRECTIVE ACTION
       // --------------------------------------------------------
 
-      final alreadyExists =
-      existing.any(
-            (row) =>
-        row['validation_id']
-            ?.toString()
-            .trim() ==
-            validationId,
-      );
-
-      if (alreadyExists) {
+      // Existing corrective-action records are retained.
+// Root-cause values are derived by the GET endpoint,
+// not written into nonexistent database columns.
+      if (existingAction != null) {
         continue;
       }
-
       // --------------------------------------------------------
-      // Create corrective action.
+      // CREATE NEW CORRECTIVE ACTION
       // --------------------------------------------------------
 
-      final inserted = await _supabase
-          .from(
-        'ccr_corrective_actions',
-      )
-          .insert({
-        'ccr_id':
-        cleanCcrId,
+      final inserted = await CcrApiClient.post(
+        '/corrective-actions',
+        body: {
+          'data': {
+            'ccr_id': cleanCcrId,
+            'validation_id': validationId,
+          },
+        },
+      );
 
-        'validation_id':
-        validationId,
-
-        'problem_statement':
-        problemStatement.isEmpty
-            ? null
-            : problemStatement,
-
-        'occurrence_root_cause':
-        occurrenceRootCause.isEmpty
-            ? null
-            : occurrenceRootCause,
-
-        'detection_root_cause':
-        detectionRootCause.isEmpty
-            ? null
-            : detectionRootCause,
-      })
-          .select('id')
-          .single();
-
-      final actionId =
-      inserted['id']?.toString();
-
-      if (actionId == null ||
-          actionId.isEmpty) {
+      if (inserted is! Map) {
         throw Exception(
-          'Corrective action could not be created.',
+          'Corrective action could not be created for validation $validationId.',
         );
       }
 
-      // --------------------------------------------------------
-      // DO NOT CREATE A VERIFICATION RECORD HERE.
-      //
-      // Verification is no longer part of this stage.
-      // --------------------------------------------------------
+      final insertedRow = Map<String, dynamic>.from(inserted);
+
+      final actionId = insertedRow['id']?.toString();
+
+      if (actionId == null || actionId.isEmpty) {
+        throw Exception(
+          'Corrective action was created without returning its ID.',
+        );
+      }
+
+      // Track the new row to prevent duplicate creation.
+      existing.add(insertedRow);
     }
   }
 
@@ -367,26 +273,19 @@ class CcrCorrectiveActionService {
       String validationId,
       String analysisType,
       ) {
-    final cleanValidationId =
-    validationId.trim();
-
-    final cleanType =
-    analysisType.trim().toLowerCase();
+    final cleanValidationId = validationId.trim();
+    final cleanType = analysisType.trim().toLowerCase();
 
     for (final row in rows) {
       final rowValidationId =
-      row['validation_id']
-          ?.toString()
-          .trim();
+      row['validation_id']?.toString().trim();
 
-      final rowType =
-      row['analysis_type']
+      final rowType = row['analysis_type']
           ?.toString()
           .trim()
           .toLowerCase();
 
-      if (rowValidationId ==
-          cleanValidationId &&
+      if (rowValidationId == cleanValidationId &&
           rowType == cleanType) {
         return row;
       }
@@ -399,19 +298,8 @@ class CcrCorrectiveActionService {
   // ROOT CAUSE
   //
   // The LAST NON-EMPTY WHY becomes the root cause.
-  //
-  // Example:
-  //
-  // Why 1 = A
-  // Why 2 = B
-  // Why 3 = C
-  // Why 4 = empty
-  // Why 5 = empty
-  //
-  // Root cause = C
-  //
-  // Likewise, if Why 5 is populated, Why 5 becomes the root
-  // cause.
+  // If there are no populated Why steps, use the
+  // potential_root_cause as a fallback.
   // ============================================================
 
   String _rootCauseFromAnalysis(
@@ -421,76 +309,47 @@ class CcrCorrectiveActionService {
       return '';
     }
 
-    final rawSteps =
-    analysis['ccr_why_steps'];
+    final rawSteps = analysis['ccr_why_steps'];
 
     if (rawSteps is! List) {
-      return analysis[
-      'potential_root_cause']
+      return analysis['potential_root_cause']
           ?.toString()
           .trim() ??
           '';
     }
 
-    final steps =
-    <Map<String, dynamic>>[];
+    final steps = <Map<String, dynamic>>[];
 
     for (final raw in rawSteps) {
       if (raw is Map) {
-        steps.add(
-          Map<String, dynamic>.from(
-            raw,
-          ),
-        );
+        steps.add(Map<String, dynamic>.from(raw));
       }
     }
 
-    // ----------------------------------------------------------
     // Sort Why steps numerically.
-    // ----------------------------------------------------------
+    steps.sort((a, b) {
+      final aNumber = int.tryParse(
+        a['why_number']?.toString() ?? '',
+      ) ??
+          0;
 
-    steps.sort(
-          (a, b) {
-        final aNumber =
-            int.tryParse(
-              a['why_number']
-                  ?.toString() ??
-                  '',
-            ) ??
-                0;
+      final bNumber = int.tryParse(
+        b['why_number']?.toString() ?? '',
+      ) ??
+          0;
 
-        final bNumber =
-            int.tryParse(
-              b['why_number']
-                  ?.toString() ??
-                  '',
-            ) ??
-                0;
+      return aNumber.compareTo(bNumber);
+    });
 
-        return aNumber.compareTo(
-          bNumber,
-        );
-      },
-    );
-
-    // ----------------------------------------------------------
-    // Keep replacing deepest whenever a non-empty Why is found.
-    //
-    // Therefore the final value is always the LAST non-empty
-    // Why.
-    // ----------------------------------------------------------
-
+    // Keep replacing the root cause whenever a non-empty
+    // Why is found. The final value is the deepest populated Why.
     String deepest = '';
 
     for (final step in steps) {
-      final text =
-          step['why_text']
-              ?.toString()
-              .trim() ??
-              '';
+      final whyText = step['why_text']?.toString().trim() ?? '';
 
-      if (text.isNotEmpty) {
-        deepest = text;
+      if (whyText.isNotEmpty) {
+        deepest = whyText;
       }
     }
 
@@ -498,12 +357,7 @@ class CcrCorrectiveActionService {
       return deepest;
     }
 
-    // ----------------------------------------------------------
-    // Fallback.
-    // ----------------------------------------------------------
-
-    return analysis[
-    'potential_root_cause']
+    return analysis['potential_root_cause']
         ?.toString()
         .trim() ??
         '';
@@ -529,108 +383,48 @@ class CcrCorrectiveActionService {
     final cleanId = actionId.trim();
 
     if (cleanId.isEmpty) {
-      throw Exception(
-        'Corrective action ID is missing.',
-      );
+      throw Exception('Corrective action ID is missing.');
     }
 
-    await _supabase
-        .from(
-      'ccr_corrective_actions',
-    )
-        .update({
-      'problem_statement':
-      _nullable(
-        problemStatement,
-      ),
-
-      // These two values originate from the final
-      // 5-Why values and are therefore kept in the CA
-      // record for reporting/history.
-      'occurrence_root_cause':
-      _nullable(
-        occurrenceRootCause,
-      ),
-
-      'detection_root_cause':
-      _nullable(
-        detectionRootCause,
-      ),
-
-      'corrective_action':
-      _nullable(
-        correctiveAction,
-      ),
-
-      'dri':
-      _nullable(
-        dri,
-      ),
-
-      'result_before':
-      _nullable(
-        resultBefore,
-      ),
-
-      'result_after':
-      _nullable(
-        resultAfter,
-      ),
-
-      'due_date':
-      dueDate
-          ?.toIso8601String()
-          .split('T')
-          .first,
-
-      'completion_date':
-      completionDate
-          ?.toIso8601String()
-          .split('T')
-          .first,
-
-      'status':
-      status.trim(),
-
-      'updated_at':
-      DateTime.now()
-          .toIso8601String(),
-    })
-        .eq(
-      'id',
-      cleanId,
+    await CcrApiClient.patch(
+      '/corrective-actions/$cleanId',
+      body: {
+        'data': {
+          'problem_statement': _nullable(problemStatement),
+          'occurrence_root_cause':
+          _nullable(occurrenceRootCause),
+          'detection_root_cause':
+          _nullable(detectionRootCause),
+          'corrective_action': _nullable(correctiveAction),
+          'dri': _nullable(dri),
+          'result_before': _nullable(resultBefore),
+          'result_after': _nullable(resultAfter),
+          'due_date': dueDate?.toIso8601String().split('T').first,
+          'completion_date':
+          completionDate?.toIso8601String().split('T').first,
+          'status': status.trim(),
+          'updated_at': DateTime.now().toIso8601String(),
+        },
+      },
     );
   }
 
   // ============================================================
-  // COMPLETE CA STAGE
+  // COMPLETE CORRECTIVE ACTION STAGE
   //
   // Verification is intentionally NOT checked here.
-  //
-  // The CA stage validates only the fields visible on the CA
-  // screen and then advances exactly one configured workflow
-  // stage using ccr_workflow_stages.display_order.
+  // The backend handles workflow advancement.
   // ============================================================
 
-  Future<void> completeStage(
-      String ccrId,
-      ) async {
+  Future<void> completeStage(String ccrId) async {
     final cleanCcrId = ccrId.trim();
 
     if (cleanCcrId.isEmpty) {
-      throw Exception(
-        'CCR ID is missing.',
-      );
+      throw Exception('CCR ID is missing.');
     }
 
-    // ----------------------------------------------------------
-    // Reload actions from DB.
-    // ----------------------------------------------------------
-
-    final actions =
-    await getCorrectiveActions(
-      cleanCcrId,
-    );
+    // Reload actions from the API.
+    final actions = await getCorrectiveActions(cleanCcrId);
 
     if (actions.isEmpty) {
       throw Exception(
@@ -638,24 +432,15 @@ class CcrCorrectiveActionService {
       );
     }
 
-    // ----------------------------------------------------------
-    // Validate CA fields only.
-    //
-    // NO verification lookup.
-    // ----------------------------------------------------------
-
+    // Validate only fields visible on the Corrective Action stage.
     for (final action in actions) {
-      if (action.correctiveAction
-          .trim()
-          .isEmpty) {
+      if (action.correctiveAction.trim().isEmpty) {
         throw Exception(
           'Corrective action is required for every action plan.',
         );
       }
 
-      if (action.dri
-          .trim()
-          .isEmpty) {
+      if (action.dri.trim().isEmpty) {
         throw Exception(
           'DRI is required for every action plan.',
         );
@@ -673,179 +458,32 @@ class CcrCorrectiveActionService {
         );
       }
 
-      if (action.resultBefore
-          .trim()
-          .isEmpty) {
+      if (action.resultBefore.trim().isEmpty) {
         throw Exception(
           'Result Before CA is required for every action plan.',
         );
       }
 
-      if (action.resultAfter
-          .trim()
-          .isEmpty) {
+      if (action.resultAfter.trim().isEmpty) {
         throw Exception(
           'Result After CA is required for every action plan.',
         );
       }
     }
 
-    // ----------------------------------------------------------
-    // Read current CCR stage.
-    // ----------------------------------------------------------
-
-    final currentCase =
-    await _supabase
-        .from('ccr_cases')
-        .select(
-      'current_stage',
-    )
-        .eq(
-      'id',
-      cleanCcrId,
-    )
-        .single();
-
-    final currentStage =
-    currentCase['current_stage']
-        ?.toString()
-        .trim();
-
-    if (currentStage == null ||
-        currentStage.isEmpty) {
-      throw Exception(
-        'Current workflow stage is missing.',
-      );
-    }
-
-    // ----------------------------------------------------------
-    // Get current stage display order from DB.
-    // ----------------------------------------------------------
-
-    final currentStageRow =
-    await _supabase
-        .from(
-      'ccr_workflow_stages',
-    )
-        .select(
-      'display_order',
-    )
-        .eq(
-      'stage_key',
-      currentStage,
-    )
-        .maybeSingle();
-
-    if (currentStageRow == null) {
-      throw Exception(
-        'Current workflow stage "$currentStage" is not configured.',
-      );
-    }
-
-    final rawOrder =
-    currentStageRow['display_order'];
-
-    final currentOrder =
-    rawOrder is num
-        ? rawOrder.toInt()
-        : int.tryParse(
-      rawOrder?.toString() ??
-          '',
-    ) ??
-        0;
-
-    // ----------------------------------------------------------
-    // Find the NEXT active workflow stage.
-    //
-    // The sequence is NOT hardcoded.
-    // ----------------------------------------------------------
-
-    final nextStage =
-    await _supabase
-        .from(
-      'ccr_workflow_stages',
-    )
-        .select(
-      'stage_key, stage_name, display_order',
-    )
-        .eq(
-      'is_active',
-      true,
-    )
-        .gt(
-      'display_order',
-      currentOrder,
-    )
-        .order(
-      'display_order',
-      ascending: true,
-    )
-        .limit(1)
-        .maybeSingle();
-
-    if (nextStage == null) {
-      throw Exception(
-        'No next active CCR workflow stage is configured.',
-      );
-    }
-
-    final nextKey =
-    nextStage['stage_key']
-        ?.toString()
-        .trim();
-
-    if (nextKey == null ||
-        nextKey.isEmpty) {
-      throw Exception(
-        'Next workflow stage is missing.',
-      );
-    }
-
-    // ----------------------------------------------------------
-    // Move CCR forward exactly one stage.
-    //
-    // Optimistic condition prevents another process from
-    // changing the workflow underneath us.
-    // ----------------------------------------------------------
-
-    final updated =
-    await _supabase
-        .from('ccr_cases')
-        .update({
-      'current_stage':
-      nextKey,
-      'updated_at':
-      DateTime.now()
-          .toIso8601String(),
-    })
-        .eq(
-      'id',
-      cleanCcrId,
-    )
-        .eq(
-      'current_stage',
-      currentStage,
-    )
-        .select('id');
-
-    if (updated.isEmpty) {
-      throw Exception(
-        'CCR workflow stage changed during completion. Reload the CCR.',
-      );
-    }
+    // FastAPI validates and advances the workflow.
+    await CcrApiClient.post(
+      '/cases/$cleanCcrId/corrective-actions/complete',
+    );
   }
 
   // ============================================================
   // NULLABLE STRING HELPER
   // ============================================================
 
-  String? _nullable(
-      String value,
-      ) {
+  String? _nullable(String value) {
     final clean = value.trim();
 
-    return clean.isEmpty
-        ? null
-        : clean;
+    return clean.isEmpty ? null : clean;
   }
 }

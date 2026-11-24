@@ -2,8 +2,8 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../services/ccr/ccr_api_client.dart';
 import '../../models/ccr/ccr_case.dart';
 import '../../services/ccr/ccr_service.dart';
 import 'ccr_closure_screen.dart';
@@ -23,8 +23,6 @@ class CcrEvidenceScreen extends StatefulWidget {
 
 class _CcrEvidenceScreenState
     extends State<CcrEvidenceScreen> {
-  final SupabaseClient _supabase =
-      Supabase.instance.client;
 
   final CcrService _ccrService =
   CcrService();
@@ -84,85 +82,27 @@ class _CcrEvidenceScreenState
       }
 
       final dynamic rawActions =
-      await _supabase
-          .from('ccr_corrective_actions')
-          .select('''
-                *,
-                ccr_action_verifications(*)
-              ''')
-          .eq(
-        'ccr_id',
-        widget.ccrId,
-      )
-          .order(
-        'created_at',
-        ascending: true,
+      await CcrApiClient.get(
+        '/cases/${widget.ccrId}/corrective-actions',
       );
 
-      final List<Map<String, dynamic>>
-      actions =
+      final List<Map<String, dynamic>> actions =
       _asMapList(rawActions);
 
-      final List<String> actionIds =
-      actions
-          .map(
-            (
-            Map<String, dynamic> item,
-            ) =>
-        item['id']?.toString() ??
-            '',
-      )
-          .where(
-            (String id) =>
-        id.isNotEmpty,
-      )
-          .toList();
+      final dynamic rawEvidence =
+      await CcrApiClient.get(
+        '/cases/${widget.ccrId}/action-evidence',
+      );
 
-      List<Map<String, dynamic>>
-      evidence =
-      <Map<String, dynamic>>[];
+      final List<Map<String, dynamic>> evidence =
+      _asMapList(rawEvidence);
 
-      if (actionIds.isNotEmpty) {
-        final dynamic rawEvidence =
-        await _supabase
-            .from('ccr_action_evidence')
-            .select('''
-                  *,
-                  ccr_attachments(
-                    id,
-                    attachment_type,
-                    title,
-                    description,
-                    storage_bucket,
-                    storage_path,
-                    original_file_name,
-                    mime_type,
-                    file_size,
-                    uploaded_at,
-                    is_deleted
-                  )
-                ''')
-            .inFilter(
-          'corrective_action_id',
-          actionIds,
-        )
-            .order(
-          'created_at',
-          ascending: true,
-        );
-
-        evidence =
-            _asMapList(rawEvidence);
-      }
-
-      final Map<String,
-          List<Map<String, dynamic>>>
+      final Map<String, List<Map<String, dynamic>>>
       grouped =
-      <String,
-          List<Map<String, dynamic>>>{};
+      <String, List<Map<String, dynamic>>>{};
 
-      for (final Map<String, dynamic>
-      item in evidence) {
+      for (final Map<String, dynamic> item
+      in evidence) {
         final String actionId =
             item['corrective_action_id']
                 ?.toString() ??
@@ -175,8 +115,7 @@ class _CcrEvidenceScreenState
         grouped
             .putIfAbsent(
           actionId,
-              () =>
-          <Map<String, dynamic>>[],
+              () => <Map<String, dynamic>>[],
         )
             .add(item);
       }
@@ -202,7 +141,6 @@ class _CcrEvidenceScreenState
       });
     }
   }
-
   // ============================================================
   // PICK MULTIPLE IMAGES
   // ============================================================
@@ -405,43 +343,9 @@ class _CcrEvidenceScreenState
     });
 
     try {
-      // --------------------------------------------------------
-      // 1. Delete Storage object
-      // --------------------------------------------------------
-
-      if (bucket.isNotEmpty &&
-          path.isNotEmpty) {
-        await _supabase.storage
-            .from(bucket)
-            .remove(
-          <String>[path],
-        );
-      }
-
-      // --------------------------------------------------------
-      // 2. Delete evidence record
-      // --------------------------------------------------------
-
-      await _supabase
-          .from('ccr_action_evidence')
-          .delete()
-          .eq(
-        'id',
-        evidenceId,
+      await CcrApiClient.delete(
+        '/action-evidence/$evidenceId',
       );
-
-      // --------------------------------------------------------
-      // 3. Delete attachment metadata
-      // --------------------------------------------------------
-
-      await _supabase
-          .from('ccr_attachments')
-          .delete()
-          .eq(
-        'id',
-        attachmentId,
-      );
-
       // --------------------------------------------------------
       // 4. Remove immediately from local UI
       // --------------------------------------------------------
@@ -536,164 +440,90 @@ class _CcrEvidenceScreenState
       return;
     }
 
-    final Map<String,
-        List<_PendingEvidence>>
+    final Map<String, List<_PendingEvidence>>
     pending =
-    <String,
-        List<_PendingEvidence>>{};
+    <String, List<_PendingEvidence>>{};
 
-    for (final MapEntry<String,
-        List<_PendingEvidence>>
-    entry
-    in _pendingEvidence.entries) {
+    for (final MapEntry<String, List<_PendingEvidence>>
+    entry in _pendingEvidence.entries) {
       pending[entry.key] =
-      List<_PendingEvidence>.from(
-        entry.value,
-      );
+      List<_PendingEvidence>.from(entry.value);
     }
 
-    for (final MapEntry<String,
-        List<_PendingEvidence>>
-    entry
-    in pending.entries) {
-      final String actionId =
-          entry.key;
+    for (final MapEntry<String, List<_PendingEvidence>>
+    entry in pending.entries) {
+      final String actionId = entry.key;
 
-      final List<_PendingEvidence>
-      items = entry.value;
+      final List<_PendingEvidence> items =
+          entry.value;
 
-      for (final _PendingEvidence item
-      in items) {
+      for (final _PendingEvidence item in items) {
         final String extension =
-        _fileExtension(
-          item.fileName,
-        );
+        _fileExtension(item.fileName);
 
         final String typeKey =
-        item.evidenceType
-            .trim()
-            .toLowerCase();
+        item.evidenceType.trim().toLowerCase();
 
-        final int timestamp =
-            DateTime.now()
-                .millisecondsSinceEpoch;
+        final String attachmentType =
+        typeKey == 'before'
+            ? 'corrective_action_before'
+            : 'corrective_action_after';
 
-        final String uniquePart =
-            '${timestamp}_${item.hashCode}';
-
-        final String storagePath =
-            'ccr/${widget.ccrId}/corrective-action/'
-            '$actionId/$typeKey-$uniquePart.$extension';
-
-        // ------------------------------------------------------
-        // Upload to dedicated CCR bucket.
-        // ------------------------------------------------------
-
-        await _supabase.storage
-            .from('ccr-files')
-            .uploadBinary(
-          storagePath,
-          item.bytes,
-          fileOptions:
-          FileOptions(
-            upsert: false,
-            contentType:
-            _contentType(
-              extension,
-            ),
-          ),
-        );
-
-        // ------------------------------------------------------
-        // Save attachment metadata.
-        // ------------------------------------------------------
-
-        final dynamic attachmentResponse =
-        await _supabase
-            .from('ccr_attachments')
-            .insert(
-          <String, dynamic>{
-            'ccr_id':
-            widget.ccrId,
-            'attachment_type':
-            typeKey == 'before'
-                ? 'corrective_action_before'
-                : 'corrective_action_after',
-            'title':
-            '$typeKey corrective action evidence',
+        // 1. Upload file and create attachment metadata.
+        final dynamic rawAttachment =
+        await CcrApiClient.uploadFileBytes(
+          path: '/cases/${widget.ccrId}/attachments',
+          bytes: item.bytes,
+          fileName: item.fileName,
+          fields: <String, String>{
+            'attachment_type': attachmentType,
+            'title': '$typeKey corrective action evidence',
             'description':
             'Evidence supporting the implemented corrective action.',
-            'storage_bucket':
-            'ccr-files',
-            'storage_path':
-            storagePath,
-            'original_file_name':
-            item.fileName,
-            'mime_type':
-            _contentType(
-              extension,
-            ),
-            'file_size':
-            item.bytes.length,
-            'uploaded_at':
-            DateTime.now()
-                .toIso8601String(),
-            'is_deleted':
-            false,
-          },
-        )
-            .select()
-            .single();
-
-        final Map<String, dynamic>
-        attachment =
-        Map<String, dynamic>.from(
-          attachmentResponse as Map,
-        );
-
-        // ------------------------------------------------------
-        // Create evidence record.
-        // ------------------------------------------------------
-
-        await _supabase
-            .from('ccr_action_evidence')
-            .insert(
-          <String, dynamic>{
-            'corrective_action_id':
-            actionId,
-            'evidence_type':
-            typeKey,
-            'title':
-            '$typeKey corrective action evidence',
-            'description':
-            'Evidence supporting the implemented corrective action.',
-            'attachment_id':
-            attachment['id'],
-            'created_by':
-            _supabase
-                .auth
-                .currentUser
-                ?.id,
-            'created_at':
-            DateTime.now()
-                .toIso8601String(),
           },
         );
 
-        // ------------------------------------------------------
-        // Remove ONLY the successfully uploaded image.
-        // ------------------------------------------------------
+        if (rawAttachment is! Map) {
+          throw Exception(
+            'The server did not return attachment information.',
+          );
+        }
 
-        final List<_PendingEvidence>?
-        current =
+        final Map<String, dynamic> attachment =
+        Map<String, dynamic>.from(rawAttachment);
+
+        final String attachmentId =
+            attachment['id']?.toString() ?? '';
+
+        if (attachmentId.isEmpty) {
+          throw Exception(
+            'The uploaded attachment ID is missing.',
+          );
+        }
+
+        // 2. Create corrective action evidence record.
+        await CcrApiClient.post(
+          '/action-evidence',
+          body: <String, dynamic>{
+            'data': <String, dynamic>{
+              'corrective_action_id': actionId,
+              'evidence_type': typeKey,
+              'title': '$typeKey corrective action evidence',
+              'description':
+              'Evidence supporting the implemented corrective action.',
+              'attachment_id': attachmentId,
+            },
+          },
+        );
+
+        // 3. Remove only the successfully uploaded item.
+        final List<_PendingEvidence>? current =
         _pendingEvidence[actionId];
 
         current?.remove(item);
 
-        if (current != null &&
-            current.isEmpty) {
-          _pendingEvidence
-              .remove(actionId);
+        if (current != null && current.isEmpty) {
+          _pendingEvidence.remove(actionId);
         }
       }
     }
@@ -732,122 +562,9 @@ class _CcrEvidenceScreenState
 
         return;
       }
-
-      final Map<String, dynamic>
-      currentCase =
-      Map<String, dynamic>.from(
-        await _supabase
-            .from('ccr_cases')
-            .select(
-          'current_stage',
-        )
-            .eq(
-          'id',
-          widget.ccrId,
-        )
-            .single(),
+      await CcrApiClient.post(
+        '/cases/${widget.ccrId}/workflow/advance',
       );
-
-      final String currentStage =
-          currentCase['current_stage']
-              ?.toString()
-              .trim() ??
-              '';
-
-      if (currentStage.isEmpty) {
-        throw Exception(
-          'Current CCR workflow stage is missing.',
-        );
-      }
-
-      final Map<String, dynamic>
-      stageRow =
-      Map<String, dynamic>.from(
-        await _supabase
-            .from('ccr_workflow_stages')
-            .select(
-          'display_order',
-        )
-            .eq(
-          'stage_key',
-          currentStage,
-        )
-            .single(),
-      );
-
-      final int currentOrder =
-      _toInt(
-        stageRow['display_order'],
-      );
-
-      final dynamic rawNextStage =
-      await _supabase
-          .from('ccr_workflow_stages')
-          .select(
-        'stage_key, stage_name, display_order',
-      )
-          .eq(
-        'is_active',
-        true,
-      )
-          .gt(
-        'display_order',
-        currentOrder,
-      )
-          .order(
-        'display_order',
-        ascending: true,
-      )
-          .limit(1)
-          .maybeSingle();
-
-      if (rawNextStage is! Map) {
-        throw Exception(
-          'No next active CCR workflow stage is configured.',
-        );
-      }
-
-      final String nextStageKey =
-          rawNextStage['stage_key']
-              ?.toString()
-              .trim() ??
-              '';
-
-      if (nextStageKey.isEmpty) {
-        throw Exception(
-          'The next CCR workflow stage has no stage key.',
-        );
-      }
-
-      final dynamic updated =
-      await _supabase
-          .from('ccr_cases')
-          .update(
-        <String, dynamic>{
-          'current_stage':
-          nextStageKey,
-          'updated_at':
-          DateTime.now()
-              .toIso8601String(),
-        },
-      )
-          .eq(
-        'id',
-        widget.ccrId,
-      )
-          .eq(
-        'current_stage',
-        currentStage,
-      )
-          .select('id');
-
-      if (updated is! List ||
-          updated.isEmpty) {
-        throw Exception(
-          'CCR workflow stage changed during this operation. Reload the CCR and try again.',
-        );
-      }
-
       if (!mounted) {
         return;
       }
@@ -967,33 +684,16 @@ class _CcrEvidenceScreenState
   Future<String?> _signedUrl(
       Map<String, dynamic> attachment,
       ) async {
-    final String bucket =
-        attachment['storage_bucket']
-            ?.toString() ??
-            '';
+    final String attachmentId =
+        attachment['id']?.toString() ?? '';
 
-    final String path =
-        attachment['storage_path']
-            ?.toString() ??
-            '';
-
-    if (bucket.isEmpty ||
-        path.isEmpty) {
+    if (attachmentId.isEmpty) {
       return null;
     }
 
-    try {
-      return await _supabase.storage
-          .from(bucket)
-          .createSignedUrl(
-        path,
-        3600,
-      );
-    } catch (_) {
-      return null;
-    }
+    return '${CcrApiClient.baseUrl}'
+        '/api/v1/ccr/attachments/$attachmentId/file';
   }
-
   // ============================================================
   // EXISTING IMAGE PREVIEW
   // ============================================================

@@ -509,65 +509,48 @@ class _CcrTeamManagementScreenState
   // BUILD
   // ============================================================
 
+
   @override
-  Widget build(
-      BuildContext context,
-      ) {
+  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
-          'CCR Team Management',
-        ),
+        title: const Text('CCR Team Management'),
         elevation: 0,
       ),
       body: _loading
           ? const Center(
-        child:
-        CircularProgressIndicator(),
+        child: CircularProgressIndicator(),
       )
           : LayoutBuilder(
-        builder:
-            (
-            context,
-            constraints,
-            ) {
-          final isWide =
-              constraints.maxWidth >=
-                  1000;
+        builder: (context, constraints) {
+          final isWide = constraints.maxWidth >= 1000;
 
           if (isWide) {
             return Row(
-              crossAxisAlignment:
-              CrossAxisAlignment
-                  .start,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 SizedBox(
                   width: 430,
-                  child:
-                  _buildTeamForm(),
+                  height: constraints.maxHeight,
+                  child: _buildTeamForm(),
                 ),
-                const VerticalDivider(
-                  width: 1,
-                ),
+                const VerticalDivider(width: 1),
                 Expanded(
-                  child:
-                  _buildTeamList(),
+                  child: SizedBox(
+                    height: constraints.maxHeight,
+                    child: _buildTeamList(),
+                  ),
                 ),
               ],
             );
           }
 
           return SingleChildScrollView(
-            padding:
-            const EdgeInsets.all(
-              20,
-            ),
+            padding: const EdgeInsets.all(20),
             child: Column(
               children: [
                 _buildTeamForm(),
-                const SizedBox(
-                  height: 24,
-                ),
+                const SizedBox(height: 24),
                 _buildTeamList(),
               ],
             ),
@@ -581,256 +564,164 @@ class _CcrTeamManagementScreenState
   // FORM
   // ============================================================
 
+
   Widget _buildTeamForm() {
-    final isEditing =
-        _editingTeamId != null;
+    final isEditing = _editingTeamId != null;
 
-    return Container(
-      padding:
-      const EdgeInsets.all(24),
-      child: Column(
-        crossAxisAlignment:
-        CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(
-                isEditing
-                    ? Icons.edit_outlined
-                    : Icons.group_add_outlined,
-              ),
-              const SizedBox(
-                width: 10,
-              ),
-              Expanded(
-                child: Text(
+    return Scrollbar(
+      thumbVisibility: true,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
                   isEditing
-                      ? 'Edit Team'
-                      : 'Create Team',
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleLarge
-                      ?.copyWith(
-                    fontWeight:
-                    FontWeight.bold,
-                  ),
+                      ? Icons.edit_outlined
+                      : Icons.group_add_outlined,
                 ),
-              ),
-            ],
-          ),
-
-          const SizedBox(
-            height: 24,
-          ),
-
-          // ------------------------------------------------------
-          // LEADER
-          // ------------------------------------------------------
-
-          Text(
-            'Team Leader',
-            style: Theme.of(context)
-                .textTheme
-                .titleSmall
-                ?.copyWith(
-              fontWeight:
-              FontWeight.w600,
-            ),
-          ),
-
-          const SizedBox(
-            height: 8,
-          ),
-
-          TextField(
-            controller:
-            _leaderController,
-            textCapitalization:
-            TextCapitalization.words,
-            decoration:
-            const InputDecoration(
-              labelText:
-              'Enter Team Leader Name',
-              hintText:
-              'Example: Rajesh Kumar',
-              border:
-              OutlineInputBorder(),
-              prefixIcon:
-              Icon(
-                Icons.person_outline,
-              ),
-            ),
-          ),
-
-          const SizedBox(
-            height: 24,
-          ),
-
-          // ------------------------------------------------------
-          // MEMBERS
-          // ------------------------------------------------------
-
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  'Team Members',
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleSmall
-                      ?.copyWith(
-                    fontWeight:
-                    FontWeight.w600,
-                  ),
-                ),
-              ),
-              Text(
-                '${_memberControllers.length} field${_memberControllers.length == 1 ? '' : 's'}',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodySmall,
-              ),
-            ],
-          ),
-
-          const SizedBox(
-            height: 8,
-          ),
-
-          ...List.generate(
-            _memberControllers.length,
-                (index) {
-              return Padding(
-                padding:
-                const EdgeInsets.only(
-                  bottom: 10,
-                ),
-                child: TextField(
-                  controller:
-                  _memberControllers[
-                  index],
-                  textCapitalization:
-                  TextCapitalization
-                      .words,
-                  decoration:
-                  InputDecoration(
-                    labelText:
-                    'Team Member ${index + 1}',
-                    hintText:
-                    'Enter member name',
-                    border:
-                    const OutlineInputBorder(),
-                    prefixIcon:
-                    const Icon(
-                      Icons.person_outline,
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    isEditing ? 'Edit Team' : 'Create Team',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleLarge
+                        ?.copyWith(
+                      fontWeight: FontWeight.bold,
                     ),
-                    suffixIcon:
-                    IconButton(
-                      tooltip:
-                      'Remove member',
-                      onPressed:
-                      _saving
-                          ? null
-                          : () =>
-                          _removeMemberField(
-                            index,
-                          ),
-                      icon:
-                      const Icon(
-                        Icons
-                            .remove_circle_outline,
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 24),
+
+            Text(
+              'Team Leader',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleSmall
+                  ?.copyWith(fontWeight: FontWeight.w600),
+            ),
+
+            const SizedBox(height: 8),
+
+            TextField(
+              controller: _leaderController,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'Enter Team Leader Name',
+                hintText: 'Example: Rajesh Kumar',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.person_outline),
+              ),
+            ),
+
+            const SizedBox(height: 24),
+
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Team Members',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleSmall
+                        ?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                ),
+                Text(
+                  '${_memberControllers.length} fields',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 8),
+
+            ...List.generate(
+              _memberControllers.length,
+                  (index) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: TextField(
+                    controller: _memberControllers[index],
+                    textCapitalization: TextCapitalization.words,
+                    decoration: InputDecoration(
+                      labelText: 'Team Member ${index + 1}',
+                      hintText: 'Enter member name',
+                      border: const OutlineInputBorder(),
+                      prefixIcon: const Icon(Icons.person_outline),
+                      suffixIcon: IconButton(
+                        tooltip: 'Remove member',
+                        onPressed: _saving
+                            ? null
+                            : () => _removeMemberField(index),
+                        icon: const Icon(
+                          Icons.remove_circle_outline,
+                        ),
                       ),
                     ),
                   ),
-                ),
-              );
-            },
-          ),
-
-          OutlinedButton.icon(
-            onPressed:
-            _saving
-                ? null
-                : _addMemberField,
-            icon:
-            const Icon(
-              Icons.add,
+                );
+              },
             ),
-            label:
-            const Text(
-              'Add Member',
+
+            OutlinedButton.icon(
+              onPressed: _saving ? null : _addMemberField,
+              icon: const Icon(Icons.add),
+              label: const Text('Add Member'),
             ),
-          ),
 
-          const SizedBox(
-            height: 24,
-          ),
+            const SizedBox(height: 24),
 
-          // ------------------------------------------------------
-          // ACTIONS
-          // ------------------------------------------------------
+            Row(
+              children: [
+                if (isEditing)
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: _saving ? null : _clearForm,
+                      child: const Text('Cancel'),
+                    ),
+                  ),
 
-          Row(
-            children: [
-              if (isEditing)
+                if (isEditing)
+                  const SizedBox(width: 12),
+
                 Expanded(
-                  child:
-                  OutlinedButton(
-                    onPressed:
-                    _saving
-                        ? null
-                        : _clearForm,
-                    child:
-                    const Text(
-                      'Cancel',
+                  flex: 2,
+                  child: FilledButton.icon(
+                    onPressed: _saving ? null : _saveTeam,
+                    icon: _saving
+                        ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                        : const Icon(Icons.save_outlined),
+                    label: Text(
+                      _saving
+                          ? 'Saving...'
+                          : isEditing
+                          ? 'Update Team'
+                          : 'Save Team',
                     ),
                   ),
                 ),
-
-              if (isEditing)
-                const SizedBox(
-                  width: 12,
-                ),
-
-              Expanded(
-                flex: 2,
-                child:
-                FilledButton.icon(
-                  onPressed:
-                  _saving
-                      ? null
-                      : _saveTeam,
-                  icon: _saving
-                      ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child:
-                    CircularProgressIndicator(
-                      strokeWidth:
-                      2,
-                      color:
-                      Colors.white,
-                    ),
-                  )
-                      : const Icon(
-                    Icons
-                        .save_outlined,
-                  ),
-                  label: Text(
-                    _saving
-                        ? 'Saving...'
-                        : isEditing
-                        ? 'Update Team'
-                        : 'Save Team',
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
+
 
   // ============================================================
   // TEAM LIST

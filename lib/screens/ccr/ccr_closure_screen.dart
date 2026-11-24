@@ -1,7 +1,8 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+
 import '../../models/ccr/ccr_case.dart';
+import '../../services/ccr/ccr_api_client.dart';
 import '../../services/ccr/ccr_service.dart';
 
 class CcrClosureScreen extends StatefulWidget {
@@ -19,8 +20,6 @@ class CcrClosureScreen extends StatefulWidget {
 
 class _CcrClosureScreenState
     extends State<CcrClosureScreen> {
-  final SupabaseClient _supabase =
-      Supabase.instance.client;
 
   final CcrService _ccrService =
   CcrService();
@@ -78,9 +77,7 @@ class _CcrClosureScreenState
   // ============================================================
 
   Future<void> _load() async {
-    if (!mounted) {
-      return;
-    }
+    if (!mounted) return;
 
     setState(() {
       _loading = true;
@@ -89,9 +86,7 @@ class _CcrClosureScreenState
 
     try {
       final CcrCase? ccr =
-      await _ccrService.getCcrById(
-        widget.ccrId,
-      );
+      await _ccrService.getCcrById(widget.ccrId);
 
       if (ccr == null) {
         throw Exception(
@@ -99,80 +94,57 @@ class _CcrClosureScreenState
         );
       }
 
+      // Load closure record through FastAPI.
       final dynamic closureResponse =
-      await _supabase
-          .from('ccr_closure')
-          .select()
-          .eq(
-        'ccr_id',
-        widget.ccrId,
-      )
-          .maybeSingle();
-
-      // ----------------------------------------------------------
-      // CUSTOMER FORMAT
-      //
-      // Customer Format is stored as a CCR attachment so it
-      // remains available after the Closure screen is reopened.
-      // ----------------------------------------------------------
-
-      final dynamic customerFormatResponse =
-      await _supabase
-          .from('ccr_attachments')
-          .select()
-          .eq(
-        'ccr_id',
-        widget.ccrId,
-      )
-          .eq(
-        'attachment_type',
-        'customer_format',
-      )
-          .eq(
-        'is_deleted',
-        false,
-      )
-          .order(
-        'uploaded_at',
-        ascending: false,
-      )
-          .limit(1)
-          .maybeSingle();
-
-      Map<String, dynamic>? customerFormat;
-
-      if (customerFormatResponse is Map) {
-        customerFormat =
-        Map<String, dynamic>.from(
-          customerFormatResponse,
-        );
-      }
+      await CcrApiClient.get(
+        '/cases/${widget.ccrId}/closure',
+      );
 
       Map<String, dynamic>? closure;
 
       if (closureResponse is Map) {
-        closure =
-        Map<String, dynamic>.from(
+        closure = Map<String, dynamic>.from(
           closureResponse,
         );
       }
 
+      // Load attachments through FastAPI.
+      final dynamic attachmentResponse =
+      await CcrApiClient.get(
+        '/cases/${widget.ccrId}/attachments',
+      );
+
+      Map<String, dynamic>? customerFormat;
+
+      if (attachmentResponse is List) {
+        final attachments = attachmentResponse
+            .whereType<Map>()
+            .map(
+              (row) => Map<String, dynamic>.from(row),
+        )
+            .where(
+              (row) =>
+          row['attachment_type']?.toString() ==
+              'customer_format' &&
+              row['is_deleted'] != true,
+        )
+            .toList();
+
+        if (attachments.isNotEmpty) {
+          customerFormat = attachments.first;
+        }
+      }
+
       if (closure != null) {
         _summaryController.text =
-            closure['closure_summary']
-                ?.toString() ??
-                '';
+            closure['closure_summary']?.toString() ?? '';
 
-        _customerResponseController
-            .text =
-            closure['customer_response']
-                ?.toString() ??
-                '';
+        _customerResponseController.text =
+            closure['customer_response']?.toString() ?? '';
 
         _remarksController.text =
-            closure['final_remarks']
-                ?.toString() ??
-                '';
+            closure['final_remarks']?.toString() ?? '';
+
         _closedByController.text =
             closure['closed_by']?.toString() ?? '';
 
@@ -181,7 +153,6 @@ class _CcrClosureScreenState
             : DateTime.tryParse(
           closure['closed_at'].toString(),
         );
-
       } else {
         _summaryController.clear();
         _customerResponseController.clear();
@@ -195,15 +166,12 @@ class _CcrClosureScreenState
       setState(() {
         _ccr = ccr;
         _closure = closure;
-        _customerFormatAttachment =
-            customerFormat;
+        _customerFormatAttachment = customerFormat;
         _pendingCustomerFormat = null;
         _loading = false;
       });
     } catch (e) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       setState(() {
         _loading = false;
@@ -290,11 +258,9 @@ class _CcrClosureScreenState
   // ============================================================
 
   Future<void> _uploadCustomerFormat() async {
-    final PlatformFile? file =
-        _pendingCustomerFormat;
+    final PlatformFile? file = _pendingCustomerFormat;
 
-    if (file == null ||
-        file.bytes == null) {
+    if (file == null || file.bytes == null) {
       return;
     }
 
@@ -303,97 +269,44 @@ class _CcrClosureScreenState
     });
 
     try {
-      // --------------------------------------------------------
-      // Mark the previous Customer Format attachment deleted.
-      //
-      // We preserve the Storage object for history instead of
-      // physically deleting it.
-      // --------------------------------------------------------
-
-      final existing =
-          _customerFormatAttachment;
-
+      // Soft-delete the previous Customer Format attachment.
       final existingId =
-      existing?['id']
+      _customerFormatAttachment?['id']
           ?.toString()
           .trim();
 
-      if (existingId != null &&
-          existingId.isNotEmpty) {
-        await _supabase
-            .from('ccr_attachments')
-            .update({
-          'is_deleted': true,
-        })
-            .eq(
-          'id',
-          existingId,
+      if (existingId != null && existingId.isNotEmpty) {
+        await CcrApiClient.delete(
+          '/attachments/$existingId',
         );
       }
 
-      final String extension =
-      _fileExtension(file.name);
-
-      final String storagePath =
-          'ccr/${widget.ccrId}/closure/customer_format/${DateTime.now().millisecondsSinceEpoch}.$extension';
-
-      final String mimeType =
-      _contentType(extension);
-
-      await _supabase.storage
-          .from('ccr-files')
-          .uploadBinary(
-        storagePath,
-        file.bytes!,
-        fileOptions: FileOptions(
-          upsert: false,
-          contentType: mimeType,
-        ),
+      // Upload the new file through FastAPI.
+      final dynamic response =
+      await CcrApiClient.uploadFileBytes(
+        path: '/cases/${widget.ccrId}/attachments',
+        bytes: file.bytes!,
+        fileName: file.name,
+        fields: {
+          'attachment_type': 'customer_format',
+          'title': file.name,
+          'description':
+          'Customer Format uploaded during CCR Closure.',
+        },
       );
 
-      final dynamic inserted =
-      await _supabase
-          .from('ccr_attachments')
-          .insert({
-        'ccr_id':
-        widget.ccrId,
-        'attachment_type':
-        'customer_format',
-        'title':
-        file.name,
-        'description':
-        'Customer Format uploaded during CCR Closure.',
-        'storage_bucket':
-        'ccr-files',
-        'storage_path':
-        storagePath,
-        'original_file_name':
-        file.name,
-        'mime_type':
-        mimeType,
-        'file_size':
-        file.bytes!.length,
-        'uploaded_at':
-        DateTime.now()
-            .toIso8601String(),
-        'is_deleted':
-        false,
-      })
-          .select()
-          .single();
-
-      if (inserted is Map) {
-        _customerFormatAttachment =
-        Map<String, dynamic>.from(
-          inserted,
+      if (response is! Map) {
+        throw Exception(
+          'Customer Format upload did not return attachment details.',
         );
       }
+
+      _customerFormatAttachment =
+      Map<String, dynamic>.from(response);
 
       _pendingCustomerFormat = null;
 
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       _showMessage(
         'Customer Format uploaded successfully.',
@@ -406,10 +319,7 @@ class _CcrClosureScreenState
         );
       }
 
-      // IMPORTANT:
-      // Re-throw the error so _complete() knows that the
-      // Customer Format upload failed and does NOT close
-      // the CCR.
+      // Prevent CCR closure if attachment upload fails.
       rethrow;
     } finally {
       if (mounted) {
@@ -490,25 +400,17 @@ class _CcrClosureScreenState
     });
 
     try {
-
-
-      final Map<String, dynamic> payload =
-      <String, dynamic>{
+      final Map<String, dynamic> payload = {
         'ccr_id': widget.ccrId,
         'closure_status':
-        _closure?['closure_status'] ??
-            'pending',
-        'closure_summary':
-        _nullable(
+        _closure?['closure_status'] ?? 'pending',
+        'closure_summary': _nullable(
           _summaryController.text,
         ),
-        'customer_response':
-        _nullable(
-          _customerResponseController
-              .text,
+        'customer_response': _nullable(
+          _customerResponseController.text,
         ),
-        'final_remarks':
-        _nullable(
+        'final_remarks': _nullable(
           _remarksController.text,
         ),
         'closed_by': _nullable(
@@ -518,36 +420,26 @@ class _CcrClosureScreenState
         'updated_at': DateTime.now().toIso8601String(),
       };
 
-      final dynamic response =
-      await _supabase
-          .from('ccr_closure')
-          .upsert(
-        payload,
-        onConflict: 'ccr_id',
-      )
-          .select()
-          .single();
+      final dynamic response = await CcrApiClient.put(
+        '/cases/${widget.ccrId}/closure',
+        body: {
+          'data': payload,
+        },
+      );
 
       if (response is Map) {
-        _closure =
-        Map<String, dynamic>.from(
-          response,
-        );
+        _closure = Map<String, dynamic>.from(response);
       }
 
       await _uploadCustomerFormat();
 
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       _showMessage(
         'Closure draft saved successfully.',
       );
     } catch (e) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       _showMessage(
         _cleanError(e),
@@ -561,18 +453,15 @@ class _CcrClosureScreenState
       }
     }
   }
-
   // ============================================================
   // COMPLETE / CLOSE CC
   // ============================================================
-
   Future<void> _complete() async {
     if (_saving || _completing) {
       return;
     }
 
-    final String? validation =
-    _validate();
+    final String? validation = _validate();
 
     if (validation != null) {
       _showMessage(
@@ -582,13 +471,10 @@ class _CcrClosureScreenState
       return;
     }
 
-    final bool? confirmed =
-    await showDialog<bool>(
+    final bool? confirmed = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
-      builder: (
-          BuildContext dialogContext,
-          ) {
+      builder: (BuildContext dialogContext) {
         return AlertDialog(
           title: const Text(
             'Close Customer Complaint',
@@ -598,24 +484,19 @@ class _CcrClosureScreenState
           ),
           actions: [
             TextButton(
-              onPressed: () =>
-                  Navigator.pop(
-                    dialogContext,
-                    false,
-                  ),
-              child:
-              const Text('Cancel'),
+              onPressed: () => Navigator.pop(
+                dialogContext,
+                false,
+              ),
+              child: const Text('Cancel'),
             ),
             FilledButton(
-              onPressed: () =>
-                  Navigator.pop(
-                    dialogContext,
-                    true,
-                  ),
-              style:
-              _primaryButtonStyle(),
-              child:
-              const Text('Close CC'),
+              onPressed: () => Navigator.pop(
+                dialogContext,
+                true,
+              ),
+              style: _primaryButtonStyle(),
+              child: const Text('Close CC'),
             ),
           ],
         );
@@ -629,84 +510,56 @@ class _CcrClosureScreenState
     setState(() {
       _completing = true;
     });
-    try {
-      await _uploadCustomerFormat();
 
-      final String closedStatusKey =
-      await _getClosedStatusKey();
+    try {
+      // Customer Format must upload successfully before closing.
+      await _uploadCustomerFormat();
 
       final DateTime now = DateTime.now();
 
-      await _supabase
-          .from('ccr_closure')
-          .upsert(
-        <String, dynamic>{
-          'ccr_id': widget.ccrId,
-          'closure_status': 'closed',
-          'closure_summary':
-          _summaryController.text
-              .trim(),
-          'customer_response':
-          _nullable(
-            _customerResponseController
-                .text,
-          ),
-          'final_remarks':
-          _nullable(
-            _remarksController.text,
-          ),
-          'closed_by':
-          _closedByController.text.trim(),
-          'closed_at':
-          _closedAt!.toIso8601String(),
-          'updated_at':
-          now.toIso8601String(),
+      final Map<String, dynamic> payload = {
+        'ccr_id': widget.ccrId,
+        'closure_status': 'closed',
+        'closure_summary':
+        _summaryController.text.trim(),
+        'customer_response': _nullable(
+          _customerResponseController.text,
+        ),
+        'final_remarks': _nullable(
+          _remarksController.text,
+        ),
+        'closed_by':
+        _closedByController.text.trim(),
+        'closed_at':
+        _closedAt!.toIso8601String(),
+        'updated_at': now.toIso8601String(),
+      };
+
+      await CcrApiClient.post(
+        '/cases/${widget.ccrId}/closure/complete',
+        body: {
+          'data': payload,
         },
-        onConflict: 'ccr_id',
       );
 
-      await _supabase
-          .from('ccr_cases')
-          .update(
-        <String, dynamic>{
-          'status':
-          closedStatusKey,
-          'updated_at':
-          now.toIso8601String(),
-        },
-      )
-          .eq(
-        'id',
-        widget.ccrId,
-      );
-
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       _showMessage(
         'CCR closed successfully.',
       );
 
       await Future<void>.delayed(
-        const Duration(
-          milliseconds: 500,
-        ),
+        const Duration(milliseconds: 500),
       );
 
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       Navigator.popUntil(
         context,
-            (Route<dynamic> route) =>
-        route.isFirst,
+            (Route<dynamic> route) => route.isFirst,
       );
     } catch (e) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       _showMessage(
         _cleanError(e),
@@ -720,49 +573,10 @@ class _CcrClosureScreenState
       }
     }
   }
-
   // ============================================================
   // GET CLOSED STATUS FROM MASTER
   // ============================================================
 
-  Future<String> _getClosedStatusKey() async {
-    final dynamic response =
-    await _supabase
-        .from('ccr_statuses')
-        .select(
-      'status_key, status_name',
-    )
-        .eq(
-      'is_active',
-      true,
-    )
-        .ilike(
-      'status_name',
-      'closed',
-    )
-        .limit(1)
-        .maybeSingle();
-
-    if (response is! Map) {
-      throw Exception(
-        'No active Closed status is configured in CCR status master.',
-      );
-    }
-
-    final String key =
-        response['status_key']
-            ?.toString()
-            .trim() ??
-            '';
-
-    if (key.isEmpty) {
-      throw Exception(
-        'The configured Closed status has no status key.',
-      );
-    }
-
-    return key;
-  }
   Future<void> _selectClosedAt() async {
     final DateTime initialDate =
         _closedAt ?? DateTime.now();
